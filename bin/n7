@@ -3,8 +3,11 @@
 # N7 - Ad Hoc Task Automation and Orchestration in Bash.
 #
 # TODO:
-#   - add batch/serial task execuction
-#   - write tests
+#   - add example .n7 scripts
+#   - show colorized output
+#   - see if we can utilize ansible's modules for remote tasks
+#   - allow different verbose levels
+#   - write tests, run tests using docker
 #
 
 #set -x
@@ -26,17 +29,32 @@ N7::usage() {
       -m HOSTS    A list of comma separated hosts. Hosts will be read from
                   STDIN(one host per line) if the -m option is not specified.
 
-      -s FILE     Source and execute tasks in FILE before running commands on CLI.
-      -v          Verbose. Show task stdout from each host.
+      -s FILE     Source and execute tasks in FILE after running the commands
+                  specified on the command line.
+
+      -v          Verbose. Show task stdout from each remote host.
+                  Local task output is always shown unless you redirect them in the task.
+
+      -k          Keep the run directory after execution. The run directory, which
+                  is unique to each n7 invocation, stores the runtime files such as
+                  stdout and stderr files from each remote host, etc.
+
+      -p COUNT    Limit the number of parallel SSH processes to COUNT at a time.
+                   
 
 " | sed -e 's/    //')"
 }
 
-while getopts ':hs:m:v' option; do
+while getopts ':hs:m:vkp:' option; do
     case $option in
         s) N7_SCRIPT=$OPTARG ;;
         m) N7_HOSTS=$(tr , ' ' <<<"$OPTARG") ;;
         v) N7_VERBOSE=1 ;;
+        k) N7_KEEP_RUN_DIR=1 ;;
+        p) declare -r N7_SSH_COUNT=$OPTARG 
+           [ "$N7_SSH_COUNT" -gt 0 ] ||
+               N7::die "Invalid value($N7_SSH_COUNT) for the -p option!"
+            ;;
         h) N7::usage; exit ;;
         :) N7::die "Missing option argument for -$OPTARG" ;;
         \?) N7::die "Unknown option: -$OPTARG" ;;
@@ -163,6 +181,9 @@ trap 'N7::cleanup' KILL ABRT ERR TERM QUIT INT EXIT
 N7::cleanup() {
     N7::close_ssh_pipes
     rm -f "$N7_EHOSTS_FILE"
+    if [ ! "$N7_KEEP_RUN_DIR" ]; then
+        rm -rf "$N7_RUN_DIR"
+    fi
 }
 
 N7::ssh_read_pipe() { echo "$N7_RUN_DIR/$1.pipe_r"; }
@@ -578,5 +599,12 @@ N7::load_tasks
 N7::load_task_opts ${N7_TASKS[*]}
 
 N7::log "Run id=$N7_RUN_ID -- N7_DIR=$N7_DIR"
-N7::run_tasks "${N7_TASKS[*]}" "${N7_HOSTS[*]}"
+if [ "$N7_SSH_COUNT" ]; then
+    while read hosts; do
+        N7::run_tasks "${N7_TASKS[*]}" "${hosts}"
+    done < <(tr ' ' '\n' <<<${N7_HOSTS[*]} | paste -d' ' $(seq -f - ${N7_SSH_COUNT}))
+    unset hosts
+else
+    N7::run_tasks "${N7_TASKS[*]}" "${N7_HOSTS[*]}"
+fi
 
