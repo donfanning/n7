@@ -1,0 +1,582 @@
+#!/bin/bash
+#
+# N7 - Ad Hoc Task Automation and Orchestration in Bash.
+#
+# TODO:
+#   - add batch/serial task execuction
+#   - write tests
+#
+
+#set -x
+
+set -e
+
+N7::log() { echo "$(date +%Y-%m-%dT%T%z)|N7|$(whoami)${2:-"|INFO"} $@"; }
+N7::die() { N7::log "$@" >&2; exit 1; }
+
+N7::usage() {
+  echo "$(echo "\
+    Usage: $(basename "$0") [options] [cmd1 cmd2 ...]
+
+    Each command, if provided, will be run as a N7 task with default task options.
+
+    Options:
+      -h          Show this help. 
+
+      -m HOSTS    A list of comma separated hosts. Hosts will be read from
+                  STDIN(one host per line) if the -m option is not specified.
+
+      -s FILE     Source and execute tasks in FILE before running commands on CLI.
+      -v          Verbose. Show task stdout from each host.
+
+" | sed -e 's/    //')"
+}
+
+while getopts ':hs:m:v' option; do
+    case $option in
+        s) N7_SCRIPT=$OPTARG ;;
+        m) N7_HOSTS=$(tr , ' ' <<<"$OPTARG") ;;
+        v) N7_VERBOSE=1 ;;
+        h) N7::usage; exit ;;
+        :) N7::die "Missing option argument for -$OPTARG" ;;
+        \?) N7::die "Unknown option: -$OPTARG" ;;
+    esac
+done
+unset option
+shift $(($OPTIND - 1))
+
+# Read from stdin a list of hostnames, one per line, to ssh into.
+if [ ! "$N7_HOSTS" ]; then N7_HOSTS=$(</dev/stdin); fi
+
+# De-duplicate the hostnames
+N7_HOSTS=$(echo $N7_HOSTS | tr ' ' '\n' | sort | uniq)
+declare -r N7_HOSTS
+
+# Task definitions are just bash functions defined in a script.
+# Any function named with a `.' prefix is a task.
+declare -r N7_SCRIPT
+
+# If command line commands are provided then wrap the commands
+# in N7 tasks.
+i=0
+for cmd in "$@"; do
+    eval ".N7::cli_task::$i() {
+        $cmd
+    }"
+    let ++i
+done
+unset cmd i
+
+# Task names in execution order.
+N7_TASKS=()
+
+# Each task can optionally have leading null commands that specifies task specific
+# options. See the `N7::load_task_opts' function for the exact format.
+# Known task options are:
+N7_TASK_OPT_NAMES=(
+  DESCRIPTION     # describe what the task does.
+  TIMEOUT         # timeout in seconds for the remote task.
+  NO_SUBSHELL     # set it to run the remote task directly in the N7 login shell.
+
+  LOCAL           # set it to run the task locally; otherwise a task is a
+                  # remote task by default.
+
+  IGNORE_STATUS   # set it to run the remaining tasks even if the task exited
+                  # with a non-zero exit status. 
+)
+declare -r N7_TASK_OPT_NAMES
+
+N7_TASK_TIMEOUT=${N7_TASK_TIMEOUT:-60}  # default task timeout, in seconds.
+N7_ERRNO_TIMEOUT=999  # a task exits with this exit code if it's timed out.
+declare -r N7_ERRNO_TIMEOUT
+#Note: this is a special "exit code" since it's > 255 it won't be confused
+#      the task's exit code.
+
+N7_EOT=$(openssl rand -hex 16) # "End Of Task" marker
+declare -r N7_EOT
+#
+# At the end of each a task execution, N7 outputs an EOT line of this form:
+#
+#   "$N7_EOT $host $N7_TASK_IDX $?"
+#
+# where $host is the hostname N7 used to ssh into the host, $N7_TASK_IDX is
+# integral index of the task into the N7_TASKS array, and $? is, of course,
+# the exit status of the last command run by the task.
+#
+
+N7_NL=$'\n'
+
+
+N7_DIR=${N7_DIR:-/tmp/n7} && mkdir -p "$N7_DIR"
+N7_DIR=$(cd "${N7_DIR:-/tmp/n7}" && pwd)
+N7_RUN_ID=$$_$(date +%s)
+N7_RUNS_DIR=$N7_DIR/runs
+N7_RUN_DIR=$N7_RUNS_DIR/$N7_RUN_ID
+declare -r N7_DIR N7_RUN_ID N7_RUNS_DIR N7_RUN_DIR
+
+mkdir -p "$N7_DIR" "$N7_DIR/tmp" "$N7_RUNS_DIR" "$N7_RUN_DIR"
+
+# used for temporarily storing updated N7_EHOSTS by a local task.
+N7_EHOSTS_FILE=$N7_RUN_DIR/.ehosts
+
+# stdout of all local tasks go here.
+N7_LOCAL_OUT_FILE=$N7_RUN_DIR/localhost.out
+
+
+N7_SSH_OPTS=${N7_SSH_OPTS:-"
+  -o PasswordAuthentication=no
+  -o ControlMaster=auto
+  -o ControlPersist=60s 
+  -o ControlPath=$N7_DIR/tmp/n7-ssh-%h-%p-%r
+"}
+N7_SSH_CMD="ssh $(printf "%s " $N7_SSH_OPTS)"
+N7_SSH_PIDs=$N7_RUN_DIR/.ssh.pids
+N7_SSH_PPIDs=()
+N7_SSH_PIPE_FDs=()  # file descriptors redirected to write to the SSH read pipes.
+                    # these FDs exist mainly to keep the pipes open.
+
+N7::close_ssh_pipes() {
+    local fd pid_pgid host
+    for fd in ${N7_SSH_PIPE_FDs[*]}; do
+        eval "exec $fd>&-"
+    done
+
+    # kill ssh processes
+    [ -r "$N7_SSH_PIDs" ] && {
+        kill $(<"$N7_SSH_PIDs") >/dev/null 2>&1
+        rm "$N7_SSH_PIDs"
+    }
+
+    # kill -9 each of the whole process groups that's reading the ssh pipes.
+    for pid_pgid in $(ps x -opid,pgid | awk 'NR==1 {next}; {printf("%d,%d\n", $1, $2)}'); do
+        if [[ " ${N7_SSH_PPIDs[*]} " =~ " ${pid_pgid%,*} " ]]; then
+            kill -9 -- -${pid_pgid#*,} >/dev/null 2>&1
+        fi
+    done
+
+    for host in $N7_HOSTS; do
+        rm -f "$(N7::ssh_read_pipe $host)"
+    done
+}
+
+trap 'N7::cleanup' KILL ABRT ERR TERM QUIT INT EXIT
+N7::cleanup() {
+    N7::close_ssh_pipes
+    rm -f "$N7_EHOSTS_FILE"
+}
+
+N7::ssh_read_pipe() { echo "$N7_RUN_DIR/$1.pipe_r"; }
+N7::ssh_out_file() { echo "$N7_RUN_DIR/$1.out"; }
+N7::ssh_err_file() { echo "$N7_RUN_DIR/$1.err"; }
+N7::ssh_host_from_out_file() { echo $(basename "${1%.out}"); }
+N7::send_cmd() { printf "%s\n" "$1" >"$(N7::ssh_read_pipe ${2:?'Empty host!'})"; }
+N7::send_eot_line() {
+    N7::send_cmd "echo $N7_EOT ${1:--} ${N7_TASK_IDX:-1} ${2:-\$?} | tee /dev/stderr" $1
+}
+N7::is_num() { [ "$1" ] && printf "%.0f" "$1" >/dev/null 2>&1; }
+
+# N7::load_tasks
+#
+# Load up N7_TASKS with task names in the order they are defined in N7_SCRIPT.
+#
+N7::load_tasks() {
+    # Add command-line tasks
+    N7_TASKS=($(declare -f | grep '^\.N7::cli_task::' | cut -d' ' -f1 | sort -t: -nk5))
+
+    shopt -s extdebug
+    N7_TASKS+=($(
+        for f in $(declare -f | grep '^\.' | cut -d' ' -f1); do
+            line=$(declare -F $f)
+            p=${line#* }; p=${p#* }
+            if [ "$p" = "$N7_SCRIPT" ]; then printf "%s\n" "$line"; fi
+        done | sort -nk2 | cut -d' ' -f1)
+    )
+    shopt -u extdebug
+}
+
+
+# N7::parse_task_opts <task_defn>
+#
+# Take a function definition, parse all leading null commands(:) of the form:
+#
+#     ': name1=value1'
+#     ': name2=value2'
+# 
+# until the first non-null command, which marks the end of the task option section.
+#
+# Output the right hand side of an associative array assignment of this form:
+#
+#     '([name1]=value1
+#      [name2]=value2
+#        ...
+#      )'
+#
+N7::parse_task_opts() {
+    local section=$(awk '/^ *: /, $0 ~ "^ *[^#]" && $0 !~ "^ *: " {print}' <<<"$(declare -f $1)")
+    echo "("
+    echo "$section" | sed '$d
+      s/^ *:  *//g 
+      s/\([^ ]\)/\[\1/ 
+      s/=/\]=/
+      s/;$//
+    '
+    echo ")"
+}
+
+# Usage: N7::get_task_opt <task_idx> <opt_name>
+N7::get_task_opt() {
+    if [ "$2" = NAME ]; then
+        printf "%s\n" ${N7_TASKS[$1]}
+    else
+        local task_opt="N7_TASK_OPTS_$1[$2]"
+        printf "%s\n" "${!task_opt}"  
+    fi
+}
+
+# N7::load_task_opts <all task definitions...>
+#
+# Dynamically assign a global array variable, N7_TASK_OPTS_{n}.
+#
+# So as an example, for the first task(task 0) you have N7_TASK_OPTS_0.
+# The options in such array can be obtained via the `N7::get_task_opt' function.
+#
+N7::load_task_opts() {
+    local task_idx=-1 task task_opts name val
+    while [[ $# > 0 ]]; do
+        name=N7_TASK_OPTS_$((++task_idx))
+        task=$1; shift
+        task_opts=$(N7::parse_task_opts "$task")
+
+        #HACK: if there's a syntax error with the array assignment then this will exit 1.
+        set -e; source <(echo "declare -gA $name; $name=$task_opts"); set +e
+
+        # check if each option name is valid
+        val=($(eval echo '${!'$name'[*]}'))
+        for name in ${N7_TASK_OPT_NAMES[*]}; do val=(${val[*]/#$name}); done
+        if [ "$(echo ${val[*]})" ]; then   #FIXME: option value might conflict with echo's options
+            N7::die "Invalid task options(${val[*]}) in task #$task_idx"
+        fi
+        
+        # validate the TIMEOUT value
+        val=$(N7::get_task_opt $task_idx TIMEOUT)
+        [ ! "$val" ] || [ "$val" -gt 0 ] || N7::die "Invalid timeout(\`$val') for task #$task_idx!"
+    done
+}
+
+
+# N7::wait_for_tasks_on_hosts <task_idx> [host1 host2 ...]
+#
+# Periodically look at the last line of each host out-file, expecting the EOT marker.
+#
+# If the EOT line is found at the end within task timeout, then it means the last
+# task has finished. Otherwise, the task has been timed out.
+#
+# Output the EOT lines. For timed out hosts, the rc field of the EOT line will be
+# set to $N7_ERRNO_TIMEOUT.
+#
+N7::wait_for_task_on_hosts() {
+    local task_idx=$1; shift
+    local timeout=$(N7::get_task_opt $task_idx TIMEOUT)
+    local out_files=$(for h in $*; do N7::ssh_out_file $h; done)
+    local eot_lines
+
+    timeout=${timeout:-$N7_TASK_TIMEOUT}
+    SECONDS=0
+    while (( SECONDS < timeout )); do
+        sleep 0.5
+        eot_lines=$(IFS=$'\n'; tail -v -n1 $out_files | grep -PB1 "^$N7_EOT [^ ]+ \b$task_idx\b \d+$")
+        # Note: with tail's '==> path <==' headers.
+
+        out_files=$(
+            diff <(echo "$eot_lines" | grep "^==>" | cut -d' ' -f2 | sort) \
+                 <(echo "$out_files" | sort) | grep '^>' | cut -d' ' -f2
+        )
+        [ "$eot_lines" ] && grep "^$N7_EOT" <<<"$eot_lines"
+        [ ! "$out_files" ] && return # ie, all out files have the EOT at the end.
+
+    done
+    local path oIFS=$IFS
+    IFS=$'\n'
+    for path in $out_files; do
+        echo "$N7_EOT $(N7::ssh_host_from_out_file "$path") $task_idx $N7_ERRNO_TIMEOUT"
+    done
+    IFS=$oIFS
+}
+
+# N7::wait_for_task <task_idx> [host1 host2 ...]
+#
+# Wait for task to finish running until a timeout on each host.
+# Outputs a string of hosts that N7 will be using for running the next task.
+#
+N7::wait_for_task() {
+    local task_idx=$1; shift
+    local hosts=$*
+    local host rc from_line out_file
+
+    # wait for the EOT marker at the end in each host's out file
+    while read _ host _ rc; do
+        if [ "$N7_VERBOSE" ]; then
+            out_file=$(N7::ssh_out_file $host)
+            if [ "$task_idx" = 0 ]; then 
+                from_line=1
+            else
+                from_line=$(grep -n "^$N7_EOT $host $((task_idx-1)) " "$out_file" | cut -d: -f1)
+                let ++from_line
+            fi
+            tail -n+$from_line "$out_file" >&2 
+        else
+            N7::log "$host rc=$rc" >&2
+        fi
+
+        if [ "$rc" != 0 ]; then
+
+            # remove timed out host so that it won't block the next task
+            if [ "$rc" = $N7_ERRNO_TIMEOUT ]; then
+                hosts=$(echo ${hosts/$host})
+
+            # remove failed host if the task has no IGNORE_STATUS set
+            elif [ ! "$(N7::get_task_opt $task_idx IGNORE_STATUS)" ]; then
+                hosts=$(echo ${hosts/$host})
+            fi
+        fi
+        #NOTE: if a task is timed out but has IGNORE_STATUS set, and
+        #  is actually still executing, it will block the tasks after
+        #  it(because all tasks for a host share one ssh pipe), thus
+        #  its following tasks are likely also going to be timed out.
+    done < <(N7::wait_for_task_on_hosts $task_idx $hosts)
+    echo $hosts
+}
+
+
+
+# N7::run_tasks <"task_name1 task_name2 ..."> ["host1 host2 ..."]
+# 
+# Execute the bash functions(tasks) named on all the hosts specified.
+# Each task will be run on all hosts, and a task must finish its execution on all hosts
+# before the next will be run. If a task execution fails or timed out on a host then
+# that host will be removed from execution of any further tasks unless the task has
+# its IGNORE_STATUS option set and is not timed out.
+#
+# Moreover, the following environment variables will be available to all tasks:
+#
+#   N7_TASK_IDX - The index number(0-based) of the current task.
+#   N7_EHOSTS - "The effective hosts". A space separated list of hosts that the
+#               current task is going through.
+#
+N7::run_tasks() {
+    # the "effective" host list. It gets updated by `run_tasks()' while N7_HOSTS doesn't.
+    local N7_EHOSTS=$(echo $2)
+
+    # export it so this will be available to local tasks.
+    export N7_EHOSTS
+
+    local host ssh_pipe ssh_out ssh_err fd task
+    set -- $1
+
+    for host in $N7_EHOSTS; do
+        ssh_pipe=$(N7::ssh_read_pipe $host)
+        ssh_out=$(N7::ssh_out_file $host)
+        ssh_err=$(N7::ssh_err_file $host)
+        mkfifo "$ssh_pipe" || N7::die "Failed making named pipes for ssh!"
+        set -m  # temporarily enable job control to create the following
+        (       # subshell in its own process group.
+          $N7_SSH_CMD $host 'exec -l /bin/bash' <"$ssh_pipe" >"$ssh_out" 2>"$ssh_err" &
+          ssh_pid=$!
+          echo $ssh_pid >>"$N7_SSH_PIDs"
+          wait $ssh_pid
+          if [ $? -gt 0 -a $? -lt 128 ]; then
+              N7::log "$(echo "SSH connection to $host disconnected!"; cat "$ssh_err")"
+          fi
+
+          # remove the ssh pid from the ssh pid file
+          sed -i '' -e "/^$ssh_pid\$/d" "$N7_SSH_PIDs" >/dev/null 2>&1
+
+          # make any further writes to the pipe fail without blocking,
+          # then read from the pipe to unblock the process that had written
+          # to it before the chmod.
+          chmod a-w "$ssh_pipe" &&
+          while true; do cat "$ssh_pipe" >/dev/null; done #FIXME: don't discard the data read?
+        ) & set +m
+        N7_SSH_PPIDs+=($!)
+
+        # this is just to keep the pipe from being closed when its
+        # write end closes.
+        exec {fd}>"$ssh_pipe" || N7::die "Failed FD creations and redirections"
+        N7_SSH_PIPE_FDs+=($fd)
+
+        # define task functions on the remote host
+        for task in ${N7_TASKS[*]}; do
+            N7::send_cmd "$(declare -f $task)" $host
+        done
+    done
+
+    local N7_TASK_IDX=-1 rc no_subshell
+    export N7_TASK_IDX
+    while [[ $# > 0 && -n "$N7_EHOSTS" ]]; do
+        task=$1; shift
+        let ++N7_TASK_IDX
+
+        N7::log "Running Task #$N7_TASK_IDX: $(N7::get_task_opt $N7_TASK_IDX NAME) ..."
+
+        # handle local task, which has no timeout control, and runs in a subshell.
+        if [ "$(N7::get_task_opt $N7_TASK_IDX LOCAL)" ]; then
+            ($task) >>"$N7_LOCAL_OUT_FILE"; rc=$?
+            N7::log "localhost rc=$rc"
+            if [ "$rc" != 0 -a ! "$(N7::get_task_opt $N7_TASK_IDX IGNORE_STATUS)" ]; then
+                N7::die "Error running local task #$N7_TASK_IDX: $(N7::get_task_opt $N7_TASK_IDX NAME) !"
+            fi
+            # the local task might invoke a function that changes N7_EHOSTS
+            [ -r "$N7_EHOSTS_FILE" ] && {
+                N7_EHOSTS=$(<"$N7_EHOSTS_FILE")
+                rm "$N7_EHOSTS_FILE"
+            }
+            continue
+        fi
+
+        no_subshell=$(N7::get_task_opt $N7_TASK_IDX NO_SUBSHELL)
+
+        # send the remote task to each host
+        for host in $N7_EHOSTS; do
+            N7::send_cmd "export N7_TASK_IDX=$N7_TASK_IDX"      $host
+            N7::send_cmd "export N7_EHOSTS=\$(echo $N7_EHOSTS)" $host
+            [ "$no_subshell" ] || N7::send_cmd '('             $host
+                                  N7::send_cmd $task           $host
+            [ "$no_subshell" ] || N7::send_cmd ') </dev/null'  $host
+            N7::send_eot_line $host
+        done
+
+        N7_EHOSTS=$(N7::wait_for_task $N7_TASK_IDX $N7_EHOSTS)
+    done
+}
+
+
+#--- N7 built-in functions -----------------------
+
+# N7::func::tasks::send_funcs [name1 name2 ...]
+#
+# Define the list of functions specified on the remote end.
+# Abort n7 with an error if it can't locate all functions specified.
+#
+# Return 0 if all functions are defined successfully on the remote hosts;
+# return 1 if otherwise.
+#
+# This function can only be used from a local task.
+#
+N7::func::tasks::send_funcs() {
+    local name funcs=() failed=()
+    for name in $*; do
+        funcs+=("$(declare -f "$name")") || failed+=("$name")
+    done
+    [ "$failed" ] && N7::die "Failed locating functions: ${failed[@]}"
+
+    local f host hosts=$N7_EHOSTS
+    for f in "${funcs[@]}"; do
+        for host in $N7_EHOSTS; do
+            N7::send_cmd "$f" $host
+            N7::send_eot_line $host
+        done
+        hosts=$(N7::wait_for_task $N7_TASK_IDX $hosts)
+    done
+    echo $hosts >"$N7_EHOSTS_FILE"
+
+    [ "$N7_EHOSTS" = "$hosts" ]
+    return $?
+}
+
+# N7::func::tasks::send_env_vars [name1=value1 name2=value2 ...]
+#
+# Define environment variables on all remote hosts.
+#
+# Return 0 if all functions are defined successfully on the remote hosts;
+# return 1 if otherwise.
+#
+# This function can only be used from a local task.
+#
+N7::func::tasks::send_env_vars() {
+    local host name_value hosts
+    for host in $N7_EHOSTS; do
+        for name_value in "$@"; do
+            N7::send_cmd "export $(printf '%q' "$name_value") &&" $host
+        done
+        N7::send_cmd "true" $host
+        N7::send_eot_line $host
+    done
+    hosts=$(N7::wait_for_task $N7_TASK_IDX $N7_EHOSTS)
+    echo $hosts >"$N7_EHOSTS_FILE"
+
+    [ "$N7_EHOSTS" = "$hosts" ]
+    return $?
+}
+
+
+# N7::func::files::scp <local_src_path> <remote_dest_path>
+#
+# Copy a file from localhost to the remote hosts.
+# Any host it fails to copy the file to will be removed from $N7_EHOSTS.
+# Return 0 if the file is copied to all hosts successfully; return 1 otherwise.
+#
+# This function can only be used from a local task one at a time. 
+#
+N7::func::files::scp() {
+    local host
+    local pids=()
+    for host in $N7_EHOSTS; do
+        scp $N7_SSH_OPTS "$1" "$host:$2" &
+        pids+=($host,$!)
+    done
+    local host_pid status=0
+    for host_pid in ${pids[*]}; do
+        host=${host_pid%,*}
+        N7::send_cmd ": N7::func::files::cp $1 $2" $host
+        if wait ${host_pid#*,}; then
+            N7::send_eot_line $host 0
+        else
+            N7::send_eot_line $host 1
+            status=1
+        fi
+    done
+    echo $(N7::wait_for_task $N7_TASK_IDX $N7_EHOSTS) >"$N7_EHOSTS_FILE"
+    return $status
+}
+
+# N7::func:tasks::get_stdout <hostname> <task_idx>
+#
+# Output the stdout of task <task_idx> from <hostname>
+#
+N7::func:tasks::get_stdout() {
+    [ "$2" -ge 0 ] &&
+    awk 'BEGIN { i = 0 }
+    { if ($0 !~ "^'$N7_EOT'")
+        lines[i++] = $0
+      else {
+        if ($3 == "'$2'")
+          for (e=0; e < i; e++)
+            print lines[e];
+        i=0;
+      } 
+    }' "$(N7::ssh_out_file $1)"
+}
+
+# N7::func:tasks::get_stderr <hostname> <task_idx>
+#
+# Output the stderr of task <task_idx> from <hostname>
+#
+eval "$(declare -f N7::func:tasks::get_stdout \
+         | sed -e 's/stdout/stderr/
+                   s/_out_/_err_/'
+       )"
+
+#-------------
+set +e
+
+
+
+if [ -r "$N7_SCRIPT" ]; then
+    source "$N7_SCRIPT" || N7::die "Failed loading $N7_SCRIPT!"
+fi
+N7::load_tasks
+N7::load_task_opts ${N7_TASKS[*]}
+
+N7::log "Run id=$N7_RUN_ID -- N7_DIR=$N7_DIR"
+N7::run_tasks "${N7_TASKS[*]}" "${N7_HOSTS[*]}"
+
