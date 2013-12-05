@@ -1,10 +1,23 @@
 N7 - Ad Hoc Task Automation and Orchestration in Bash.
 -------------------------------------------------------
-**WARNING** This is a work in progress and is still at very early stage of development.
-Things may break, or change. Use at your own risk! Contributions welcome.
+**WARNING**
+This is a work in progress and is still at very early stage of development.
+Things may break, or change. Use at your own risk! Contributions or suggestions
+are welcome :)
 
-Requires OpenSSH and GNU coreutils.
+Installation
+-------------
+N7 is developed against Bash version 4.2, though it should work with any Bash
+version >= 4. Additionally, it requires OpenSSH and GNU coreutils, which should
+be already installed if you are running Linux.
 
+On Mac, you can install GNU coreutils using Homebrew. However, N7 expects the
+tools to be without the g-prefix. Specifically, the dependency on GNU coreutils
+applies to the `tail`, `sleep` and probably `grep` utilites.
+
+
+How it works
+-------------
 At start up, N7 sources your `.n7` bash script, which defines [tasks](#Tasks)
 to be executed. Then N7 simply runs `ssh $N7_SSH_OPTS <host>`, with some I/O
 redirections, to connect to each host at startup. It then sends commands to
@@ -12,24 +25,24 @@ the hosts via named pipes. All remote outputs(to stdout and stderr) are
 redirected to local files. To configure how N7 uses SSH, you can set or add
 your ssh options to `N7_SSH_OPTS` or you can do it in your ssh config file.
 
-N7 automatically writes, to stdout, an End-Of-Task marker on the remote
-end at the end of each task, to signal the end of the task and to delimit
-the outputs from previous task. An implication of this is that if a task
-starts a background process then you need to redirect its stdout or make
+N7 automatically writes an End-Of-Task marker to stdout and stderr on the
+remote end at the end of each task, to signal the end of the task and to
+delimit the outputs from previous task. An implication of this is that if a
+task starts a background process then you need to redirect its stdout or make
 sure it doesn't write to the stdout; otherwise, it could interfere with the
 next task, causing it to be timed out.
 
 Moreover, N7 assumes there will be no user interactions. This means:
 
-    1. You can ssh into your host without needing to enter a password.
+  1. You can ssh into your host without needing to enter a password.
 
-    2. Your remote tasks won't be reading from SSH's stdin.
+  2. Your remote tasks won't be reading from SSH's stdin.
 
-       In fact, N7 redirects stdin to /dev/null for any remote task
-       running in a subshell. However, since N7 also allows a task to run
-       directly in the login shell, in which the stdin is connected
-       to SSH's stdin for reading command from N7, reading from stdin
-       will interfere with the communication between N7 and SSH.
+     In fact, N7 redirects stdin to /dev/null for any remote task
+     running in a subshell. However, since N7 also allows a task to run
+     directly in the login shell, in which the stdin is connected
+     to SSH's stdin for reading command from N7, reading from stdin
+     will interfere with the communication between N7 and SSH.
 
 
 Tasks
@@ -56,7 +69,7 @@ the first non-null shell command. Comments are allowed. Example:
 
 By default a task is a remote task unless the `LOCAL` task option is set.
 A remote task by default runs in a subshell on each remote host unless the
-`NO_SUBSHELL` task option is set, and by default a task that exits with a
+`NO_SUBSHELL` task option is set, and by default a task that returns a
 non-zero status is considered a failed task, unless the `IGNORE_STATUS` task
 option is set, and N7 will then not execute any subsequent tasks on the host
 that failed the task.
