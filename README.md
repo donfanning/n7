@@ -18,7 +18,7 @@ applies to the `tail`, `sleep` and probably `grep` utilites.
 
 How it works
 -------------
-At start up, N7 sources your `.n7` bash script, which defines [tasks](#Tasks)
+At start up, N7 sources your `.n7` bash script, which defines [tasks](#tasks)
 to be executed. Then N7 simply runs `ssh $N7_SSH_OPTS <host>`, with some I/O
 redirections, to connect to each host at startup. It then sends commands to
 the hosts via named pipes. All remote outputs(to stdout and stderr) are
@@ -53,7 +53,7 @@ prefix. Example:
         .hello() { echo "hello"; }
 
 A task may be executed remotely on all hosts in parallel or locally on
-`localhost`. When defining a task, task specific [options](#Task Options) may
+`localhost`. When defining a task, task specific [options](#task-options) may
 be given as shell null commands(`:`) at the beginning of the task before
 the first non-null shell command. Comments are allowed. Example:
 
@@ -76,8 +76,8 @@ that failed the task.
 
 A local task has no timeout and is always executed in a subshell of the N7
 process(ie, `TIMEOUT` and `NO_SUBSHELL` have no effects on local tasks), and
-therefore has read access to all N7's [environment variables](#N7 Environment Variables)
-and can call N7's [built-in](#N7 Built-In Functions) functions. 
+therefore has read access to all N7's [environment variables](#n7-environment-variables)
+and can call N7's [built-in](#n7-built-in-functions) functions. 
 
 All tasks will be automatically defined on remote hosts, but since a remote task
 may need to call some helper functions defined in the `.n7` script, we need to
