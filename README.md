@@ -1,5 +1,7 @@
 N7 - Ad Hoc Task Automation and Orchestration in Bash.
 -------------------------------------------------------
+**WARNING** This is a work in progress and is still at very early stage of development.
+Things may break, or change. Use at your own risk! Contributions welcome.
 
 Requires OpenSSH and GNU coreutils.
 
