@@ -177,7 +177,7 @@ N7::close_ssh_pipes() {
     done
 }
 
-trap 'N7::cleanup' KILL ABRT ERR TERM QUIT INT EXIT
+trap 'N7::cleanup' ABRT ERR TERM QUIT INT EXIT
 N7::cleanup() {
     N7::close_ssh_pipes
     rm -f "$N7_EHOSTS_FILE"
@@ -195,6 +195,10 @@ N7::send_eot_line() {
     N7::send_cmd "echo $N7_EOT ${1:--} ${N7_TASK_IDX:-1} ${2:-\$?} | tee /dev/stderr" $1
 }
 N7::is_num() { [ "$1" ] && printf "%.0f" "$1" >/dev/null 2>&1; }
+N7::mktemp() {
+    TMPDIR=$N7_RUN_DIR mktemp -t .tmp ||
+        N7::die "Failed creating a temporary file!"
+}
 
 # N7::load_tasks
 #
@@ -341,7 +345,7 @@ N7::wait_for_task() {
             if [ "$task_idx" = 0 ]; then 
                 from_line=1
             else
-                from_line=$(grep -n "^$N7_EOT $host $((task_idx-1)) " "$out_file" | cut -d: -f1)
+                from_line=$(grep -n "^$N7_EOT $host $((task_idx-1)) " "$out_file" | tail -n1 | cut -d: -f1)
                 let ++from_line
             fi
             tail -n+$from_line "$out_file" >&2 
@@ -444,7 +448,7 @@ N7::run_tasks() {
             ($task) >>"$N7_LOCAL_OUT_FILE"; rc=$?
             N7::log "localhost rc=$rc"
             if [ "$rc" != 0 -a ! "$(N7::get_task_opt $N7_TASK_IDX IGNORE_STATUS)" ]; then
-                N7::die "Error running local task #$N7_TASK_IDX: $(N7::get_task_opt $N7_TASK_IDX NAME) !"
+                N7::die "Error running local task #$N7_TASK_IDX: $(N7::get_task_opt $N7_TASK_IDX NAME) !" ERROR
             fi
             # the local task might invoke a function that changes N7_EHOSTS
             [ -r "$N7_EHOSTS_FILE" ] && {
@@ -558,6 +562,28 @@ N7::func::files::scp() {
     done
     echo $(N7::wait_for_task $N7_TASK_IDX $N7_EHOSTS) >"$N7_EHOSTS_FILE"
     return $status
+}
+
+# N7::func::files::scp_tpl <local_src_path> <remote_dest_path>
+#
+# Copy a file from localhost to the remote hosts.
+# The file content is subject to parameter expansions and process substitutions.
+#
+# Any host it fails to copy the file to will be removed from $N7_EHOSTS.
+# Return 0 if the file is copied to all hosts successfully; return 1 otherwise.
+#
+# This function can only be used from a local task one at a time. 
+#
+N7::func::files::scp_tpl() {
+    local tmpf=$(N7::mktemp)
+    (source <(echo "cat <<EOF
+$(<"$1")
+EOF
+")) >"$tmpf" || N7::die "Failed evaluating template: $1"
+    N7::func::files::scp "$tmpf" "$2"
+    local rc=$?
+    rm -f "$tmpf"
+    return $rc
 }
 
 # N7::func:tasks::get_stdout <hostname> <task_idx>
