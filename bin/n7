@@ -3,10 +3,9 @@
 # N7 - Ad Hoc Task Automation and Orchestration in Bash.
 #
 # TODO:
+#   - need a function for n7 script to add signal handlers
 #   - add example .n7 scripts
 #   - show colorized output
-#   - see if we can utilize ansible's modules for remote tasks
-#   - allow different verbose levels
 #   - write tests, run tests using docker
 #
 
@@ -14,8 +13,17 @@
 
 set -e
 
-N7::log() { echo "$(date +%Y-%m-%dT%T%z)|N7|$(whoami)${2:-"|INFO"} $@"; }
-N7::die() { N7::log "$@" >&2; exit 1; }
+declare -A N7_LOG_LEVELS=([DEBUG]=-1 [INFO]=0 [WARNING]=1 [ERROR]=2 [FATAL]=3)
+declare -i N7_VERBOSE=${N7_LOG_LEVELS[INFO]}
+
+N7::log() {
+    local level=${2:-"INFO"}; 
+    local -i ilevel=${N7_LOG_LEVELS[$level]?:"Invalid log level: $level"}
+    if [ "$ilevel" -ge "$N7_VERBOSE" ]; then
+        echo "$(date +%Y-%m-%dT%T%z)|N7|$(whoami)|$level $1"
+    fi
+}
+N7::die() { N7::log "$1" ${2:-ERROR} >&2; exit 1; }
 
 N7::usage() {
   echo "$(echo "\
@@ -32,7 +40,14 @@ N7::usage() {
       -s FILE     Source and execute tasks in FILE after running the commands
                   specified on the command line.
 
-      -v          Verbose. Show task stdout from each remote host.
+      -v LEVEL    Set the verbose level. Defaults to INFO.
+                  Levels available: $(
+                       for k in ${!N7_LOG_LEVELS[*]}; do
+                           echo ${N7_LOG_LEVELS[$k]} $k
+                       done | sort -n | cut -d' ' -f2 | xargs
+                  )
+
+      -q          Be quiet. Don't show task stdout from each remote host.
                   Local task output is always shown unless you redirect them in the task.
 
       -k          Keep the run directory after execution. The run directory, which
@@ -45,11 +60,12 @@ N7::usage() {
 " | sed -e 's/    //')"
 }
 
-while getopts ':hs:m:vkp:' option; do
+while getopts ':hs:m:v:qkp:' option; do
     case $option in
         s) N7_SCRIPT=$OPTARG ;;
         m) N7_HOSTS=$(tr , ' ' <<<"$OPTARG") ;;
-        v) N7_VERBOSE=1 ;;
+        v) N7_VERBOSE=${N7_LOG_LEVELS[$OPTARG]?:"Invalid log level: $OPTARG"} ;;
+        q) N7_QUIET=1 ;;
         k) N7_KEEP_RUN_DIR=1 ;;
         p) declare -r N7_SSH_COUNT=$OPTARG 
            [ "$N7_SSH_COUNT" -gt 0 ] ||
@@ -140,6 +156,9 @@ N7_EHOSTS_FILE=$N7_RUN_DIR/.ehosts
 # stdout of all local tasks go here.
 N7_LOCAL_OUT_FILE=$N7_RUN_DIR/localhost.out
 
+# where stderr goes during process clean up.
+# mainly used to silence bash's child-process-got-killed message.
+N7_CLEANUP_ERR_FILE=$N7_RUN_DIR/.cleanup.err
 
 N7_SSH_OPTS=${N7_SSH_OPTS:-"
   -o PasswordAuthentication=no
@@ -177,8 +196,12 @@ N7::close_ssh_pipes() {
     done
 }
 
-trap 'N7::cleanup' ABRT ERR TERM QUIT INT EXIT
+trap 'N7::cleanup' ABRT ERR TERM QUIT INT EXIT HUP
 N7::cleanup() {
+    # this is to silence bash from reporting to stderr that a
+    # child process was killed with SIGKILL.
+    exec 2>>"$N7_CLEANUP_ERR_FILE"
+    
     N7::close_ssh_pipes
     rm -f "$N7_EHOSTS_FILE"
     if [ ! "$N7_KEEP_RUN_DIR" ]; then
@@ -217,6 +240,9 @@ N7::load_tasks() {
         done | sort -nk2 | cut -d' ' -f1)
     )
     shopt -u extdebug
+    if [ ${#N7_TASKS[*]} -eq 0 ]; then
+        N7::log "No tasks are defined!" WARNING
+    fi
 }
 
 
@@ -340,7 +366,7 @@ N7::wait_for_task() {
 
     # wait for the EOT marker at the end in each host's out file
     while read _ host _ rc; do
-        if [ "$N7_VERBOSE" ]; then
+        if [ ! "$N7_QUIET" ]; then
             out_file=$(N7::ssh_out_file $host)
             if [ "$task_idx" = 0 ]; then 
                 from_line=1
@@ -421,7 +447,7 @@ N7::run_tasks() {
           # to it before the chmod.
           chmod a-w "$ssh_pipe" &&
           while true; do cat "$ssh_pipe" >/dev/null; done #FIXME: don't discard the data read?
-        ) & set +m
+        ) 2>>"$N7_CLEANUP_ERR_FILE" & set +m
         N7_SSH_PPIDs+=($!)
 
         # this is just to keep the pipe from being closed when its
@@ -448,7 +474,7 @@ N7::run_tasks() {
             ($task) >>"$N7_LOCAL_OUT_FILE"; rc=$?
             N7::log "localhost rc=$rc"
             if [ "$rc" != 0 -a ! "$(N7::get_task_opt $N7_TASK_IDX IGNORE_STATUS)" ]; then
-                N7::die "Error running local task #$N7_TASK_IDX: $(N7::get_task_opt $N7_TASK_IDX NAME) !" ERROR
+                N7::die "Error running local task #$N7_TASK_IDX: $(N7::get_task_opt $N7_TASK_IDX NAME)"
             fi
             # the local task might invoke a function that changes N7_EHOSTS
             [ -r "$N7_EHOSTS_FILE" ] && {
@@ -476,6 +502,24 @@ N7::run_tasks() {
 
 
 #--- N7 built-in functions -----------------------
+
+# N7::func::utils::trap cmd signal_spec1 signal_spec2 ...
+#
+# Wrapper around Bash's built-in trap command.
+# It takes care not to overwrite existing commands already assigned to a signal.
+#
+# Use it instead if you would like to use trap in your N7 script.
+#
+N7::func::utils::trap() {
+    local cmd=$1; shift
+    local signal cur_cmd;
+    for signal in $*; do
+        cur_cmd=$(trap -p $signal)
+        cur_cmd=${cur_cmd#*\'}
+        cur_cmd=${cur_cmd%\'*}
+        trap "${cur_cmd:+"$cur_cmd;"} $cmd" $signal
+    done
+}
 
 # N7::func::tasks::send_funcs [name1 name2 ...]
 #
