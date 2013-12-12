@@ -3,16 +3,14 @@
 # N7 - Ad Hoc Task Automation and Orchestration in Bash.
 #
 # TODO:
-#   - show also stderr
-#   - need a function for n7 script to add signal handlers
+#   - ansible module integration
+#   - write tests, run tests using docker
+#   - show also stderr for tasks with non-zero exit status
 #   - add example .n7 scripts
 #   - show colorized output
-#   - write tests, run tests using docker
 #
 
 #set -x
-
-exec </dev/null
 
 set -e
 
@@ -50,8 +48,9 @@ N7::usage() {
                        done | sort -n | cut -d' ' -f2 | xargs
                   )
 
-      -q          Be quiet. Don't show task stdout from each remote host.
-                  Local task output is always shown unless you redirect them in the task.
+      -o          Show task stdout at the end of a task from each host.
+                  Local and command-line task outputs are always shown unless you
+                  redirect them in the task.
 
       -k          Keep the run directory after execution. The run directory, which
                   is unique to each n7 invocation, stores the runtime files such as
@@ -63,12 +62,12 @@ N7::usage() {
 " | sed -e 's/    //')"
 }
 
-while getopts ':hs:m:v:qkp:' option; do
+while getopts ':hs:m:v:okp:' option; do
     case $option in
         s) N7_SCRIPT=$OPTARG ;;
         m) N7_HOSTS=$(tr , ' ' <<<"$OPTARG") ;;
         v) N7_VERBOSE=${N7_LOG_LEVELS[$OPTARG]?:"Invalid log level: $OPTARG"} ;;
-        q) N7_QUIET=1 ;;
+        o) N7_TASK_SHOW_STDOUT=1 ;;
         k) N7_KEEP_RUN_DIR=1 ;;
         p) declare -r N7_SSH_COUNT=$OPTARG 
            [ "$N7_SSH_COUNT" -gt 0 ] ||
@@ -93,11 +92,14 @@ declare -r N7_HOSTS
 # Any function named with a `.' prefix is a task.
 declare -r N7_SCRIPT
 
+# Function name prefix for command-line tasks.
+N7_CLI_TASK_PREFIX=.N7::cli_task::
+
 # If command line commands are provided then wrap the commands
 # in N7 tasks.
 i=0
 for cmd in "$@"; do
-    eval ".N7::cli_task::$i() {
+    eval "${N7_CLI_TASK_PREFIX}$i() { : REMOTE=1
         $cmd
     }"
     let ++i
@@ -107,6 +109,11 @@ unset cmd i
 # Task names in execution order.
 N7_TASKS=()
 
+# In case no LOCAL nor REMOTE task option is set for a task, this will
+# be the default.
+N7_DEFAULT_TASK_TYPE=${N7_DEFAULT_TASK_TYPE:-LOCAL}
+
+
 # Each task can optionally have leading null commands that specifies task specific
 # options. See the `N7::load_task_opts' function for the exact format.
 # Known task options are:
@@ -115,8 +122,12 @@ N7_TASK_OPT_NAMES=(
   TIMEOUT         # timeout in seconds for the remote task.
   NO_SUBSHELL     # set it to run the remote task directly in the N7 login shell.
 
-  LOCAL           # set it to run the task locally; otherwise a task is a
-                  # remote task by default.
+  LOCAL           # set it to run the task locally.
+  REMOTE          # set it to run the task remotely.
+
+  #Note: If both LOCAL and REMOTE are set then the task type will be unknown.
+  #      If neither LOCAL nor REMOTE is set then, the task is of the
+  #      $N7_DEFAULT_TASK_TYPE, which defaults to LOCAL.
 
   IGNORE_STATUS   # set it to run the remaining tasks even if the task exited
                   # with a non-zero exit status. 
@@ -263,8 +274,10 @@ N7::get_sudo() {
 #
 N7::load_tasks() {
     # Add command-line tasks
-    N7_TASKS=($(declare -f | grep '^\.N7::cli_task::' | cut -d' ' -f1 | sort -t: -nk5))
+    N7_TASKS=($(declare -f | grep "^\.N7::cli_task::" | cut -d' ' -f1 | sort -t: -nk5))
+    #FIXME: use N7_CLI_TASK_PREFIX, but need to escape regex chars...
 
+    #FIXME: exclude local tasks!
     shopt -s extdebug
     N7_TASKS+=($(
         for f in $(declare -f | grep '^\.' | cut -d' ' -f1); do
@@ -310,12 +323,8 @@ N7::parse_task_opts() {
 
 # Usage: N7::get_task_opt <task_idx> <opt_name>
 N7::get_task_opt() {
-    if [ "$2" = NAME ]; then
-        printf "%s\n" ${N7_TASKS[$1]}
-    else
-        local task_opt="N7_TASK_OPTS_$1[$2]"
-        printf "%s\n" "${!task_opt}"  
-    fi
+    local task_opt="N7_TASK_OPTS_$1[$2]"
+    printf "%s\n" "${!task_opt}"  
 }
 
 # N7::load_task_opts <all task definitions...>
@@ -345,6 +354,21 @@ N7::load_task_opts() {
         # validate the TIMEOUT value
         val=$(N7::get_task_opt $task_idx TIMEOUT)
         [ ! "$val" ] || [ "$val" -gt 0 ] || N7::die "Invalid timeout(\`$val') for task #$task_idx!"
+
+        # set NAME to function name if it's not specified.
+        if [ ! "$(eval echo \${N7_TASK_OPTS_$task_idx[NAME]})" ]; then
+            eval N7_TASK_OPTS_$task_idx[NAME]=$task
+        fi
+
+        # deal with LOCAL and REMOTE
+        val=N7_TASK_OPTS_$task_idx
+        if [ "$(eval echo \${$val[REMOTE]})" ]; then
+            eval unset $val[LOCAL]
+        elif [ "$(eval echo \${$val[LOCAL]})" ]; then
+            eval unset $val[REMOTE]
+        else
+            eval $val[$N7_DEFAULT_TASK_TYPE]=1
+        fi
     done
 }
 
@@ -398,9 +422,13 @@ N7::wait_for_task() {
     local hosts=$*
     local host rc from_line out_file
 
+    local task_name=${N7_TASKS[$task_idx]}
+    [[ $N7_TASK_SHOW_STDOUT || ${task_name/#$N7_CLI_TASK_PREFIX} != $task_name  ]]
+    local show_output=$?
+
     # wait for the EOT marker at the end in each host's out file
     while read _ host _ rc; do
-        if [ ! "$N7_QUIET" ]; then
+        if [ "$show_output" = 0 ]; then
             out_file=$(N7::ssh_out_file $host)
             if [ "$task_idx" = 0 ]; then 
                 from_line=1
@@ -541,6 +569,12 @@ N7::run_tasks() {
 
 
 #--- N7 built-in functions -----------------------
+#
+# Functions under the N7::local "namespace" can only be used locally.
+# Functions under the N7::remote "namespace can be used both remotely and locally.
+#
+#
+
 
 # N7::local::utils::trap cmd signal_spec1 signal_spec2 ...
 #
@@ -564,7 +598,7 @@ N7::local::utils::trap() {
 #
 # Run cmd on all remote hosts.
 # The command will be run in a subshell unless the env var N7_NO_SUBSHELL is
-# set for the command. Eg, N7_NO_SUBSHELL=1 N7::local::tasks::remote "echo hello"
+# set for the command. Eg, N7_NO_SUBSHELL=1 N7::local::commands::remote "echo hello"
 #
 # Return 0 if the command was run successfully on all remote hosts;
 # return 1 otherwise.
@@ -605,7 +639,7 @@ N7::local::commands::send_funcs() {
 
     local f hosts=$(N7::ssh_ehosts)
     for f in "${funcs[@]}"; do
-        N7_NO_SUBSHELL=1 N7::local::tasks::remote "$f"
+        N7_NO_SUBSHELL=1 N7::local::commands::remote "$f"
     done
     [ "$N7_EHOSTS" = "$hosts" ]
     return $?
@@ -673,7 +707,7 @@ N7::local::files::cp() {
         (  $sudo tee $dest >/dev/null &&
                 N7::remote::files::file $dest $(N7::qm "$@" "sudo=$sudo")
         )" $host
-        N7::send_eot_line $host '$(( $(echo ${PIPESTATUS[*]} | tr " " \&) ))'
+        N7::send_eot_line $host '$(( $(echo ${PIPESTATUS[*]} | tr " " \|) ))'
     done
 
     hosts=$(N7::wait_for_task $N7_TASK_IDX $hosts)
@@ -802,6 +836,18 @@ eval "$(declare -f N7::local::tasks::get_stdout \
 
 #-------------
 
+# N7::remote::files::file <path> [options]
+#
+# Set file attributes. Options are:
+#
+#   owner  - owner name.
+#   group  - group name.
+#   mode   - file permission mode; only numeric octal digits allowed.
+#   sudo   - sudo before the operation. 1 to use $N7_SUDO, any other
+#            value to use as the command to sudo.
+#
+# This function can be use both remotely and locally.
+#
 N7::remote::files::file() {
     local path=$(N7::q "$1")
     declare -A params=()
