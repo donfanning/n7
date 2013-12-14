@@ -3,6 +3,7 @@
 # N7 - Ad Hoc Task Automation and Orchestration in Bash.
 #
 # TODO:
+#   - allow a task to touch a file to indicate something has changed.
 #   - ansible module integration
 #   - write tests, run tests using docker
 #   - show also stderr for tasks with non-zero exit status
@@ -87,6 +88,7 @@ if [ ! "$N7_HOSTS" ]; then N7_HOSTS=$(</dev/stdin); fi
 # De-duplicate the hostnames
 N7_HOSTS=$(echo $N7_HOSTS | tr ' ' '\n' | sort | uniq)
 declare -r N7_HOSTS
+#FIXME: should use host:port combination rather than just host
 
 # Task definitions are just bash functions defined in a script.
 # Any function named with a `.' prefix is a task.
@@ -108,6 +110,7 @@ unset cmd i
 
 # Task names in execution order.
 N7_TASKS=()
+N7_BUILTIN_TASKS=(.N7::init_local .N7::init_remote .N7::define_builtins)
 
 # In case no LOCAL nor REMOTE task option is set for a task, this will
 # be the default.
@@ -177,7 +180,7 @@ N7_CLEANUP_ERR_FILE=$N7_RUN_DIR/.cleanup.err
 # The command to run sudo. Options can be added too.
 # Eg, N7_SUDO='sudo -u someone'
 #
-# This is mainly used by N7's built-in functions(eg, N7::local::files::scp()).
+# This is mainly used by N7's built-in functions(eg, N7::local::files::cp()).
 # It can also be overriden by the `sudo` option of the built-in functions
 # that support it. In your own task you can just run sudo by yourself.
 N7_SUDO=${N7_SUDO:-sudo}
@@ -241,14 +244,18 @@ N7::ssh_out_file() { echo "$N7_RUN_DIR/$1.out"; }
 N7::ssh_err_file() { echo "$N7_RUN_DIR/$1.err"; }
 N7::ssh_host_from_out_file() { echo $(basename "${1%.out}"); }
 N7::send_cmd() { printf "%s\n" "$1" >"$(N7::ssh_read_pipe ${2:?'Empty host!'})"; }
+
 N7::send_eot_line() {
-    N7::send_cmd "echo $N7_EOT ${1:--} ${N7_TASK_IDX:-1} ${2:-\$?} | tee /dev/stderr" $1
+    N7::send_cmd "echo $N7_EOT ${1:--} ${N7_TASK_IDX:--1} ${2:-\$?} | tee /dev/stderr" $1
+
+#    local changed_f=$(N7::task_state_changed) #FIXME
+#    # the line is: <eot_hash> <hostname> <task_index> <exit_status> <changed|->
+#    N7::send_cmd "echo $N7_EOT ${1:--} ${N7_TASK_IDX:--1} ${2:-\$?} \
+#                       \$([ -e $(N7::q "$changed_f") ] && echo changed || echo -) |
+#                  tee /dev/stderr
+#    " $1
 }
-N7::q() { printf "%q\n" "$*"; }
-N7::qm() {
-    local result=$(printf "%q " "$@")
-    printf "${result% }\n"
-}
+
 
 N7::is_num() { [ "$1" ] && printf "%.0f" "$1" >/dev/null 2>&1; }
 N7::mktemp() {
@@ -262,10 +269,6 @@ N7::ssh_ehosts() {
     fi
     echo ${out:-$N7_EHOSTS}
 }
-N7::get_sudo() {
-    local sudo=${1:-$N7_SUDO}
-    if [ "$sudo" = 1 ]; then echo "$N7_SUDO"; else echo "$sudo"; fi
-}
 
 
 # N7::load_tasks
@@ -273,11 +276,13 @@ N7::get_sudo() {
 # Load up N7_TASKS with task names in the order they are defined in N7_SCRIPT.
 #
 N7::load_tasks() {
+    # Add built-in tasks
+    N7_TASKS+=(${N7_BUILTIN_TASKS[*]})
+
     # Add command-line tasks
-    N7_TASKS=($(declare -f | grep "^\.N7::cli_task::" | cut -d' ' -f1 | sort -t: -nk5))
+    N7_TASKS+=($(declare -f | grep "^\.N7::cli_task::" | cut -d' ' -f1 | sort -t: -nk5))
     #FIXME: use N7_CLI_TASK_PREFIX, but need to escape regex chars...
 
-    #FIXME: exclude local tasks!
     shopt -s extdebug
     N7_TASKS+=($(
         for f in $(declare -f | grep '^\.' | cut -d' ' -f1); do
@@ -392,7 +397,7 @@ N7::wait_for_task_on_hosts() {
     timeout=${timeout:-$N7_TASK_TIMEOUT}
     SECONDS=0
     while (( SECONDS < timeout )); do
-        sleep 0.5
+        sleep 0.01
         eot_lines=$(IFS=$'\n'; tail -v -n1 $out_files | grep -PB1 "^$N7_EOT [^ ]+ \b$task_idx\b \d+$")
         # Note: with tail's '==> path <==' headers.
 
@@ -461,33 +466,15 @@ N7::wait_for_task() {
 }
 
 
-
-# N7::run_tasks <"task_name1 task_name2 ..."> ["host1 host2 ..."]
-# 
-# Execute the bash functions(tasks) named on all the hosts specified.
-# Each task will be run on all hosts, and a task must finish its execution on all hosts
-# before the next will be run. If a task execution fails or timed out on a host then
-# that host will be removed from execution of any further tasks unless the task has
-# its IGNORE_STATUS option set and is not timed out.
+# N7::ssh_connect [host1 host2 ...]
 #
-# Moreover, the following environment variables will be available to all tasks:
-#
-#   N7_TASK_IDX - The index number(0-based) of the current task.
-#   N7_EHOSTS - "The effective hosts". A space separated list of hosts that the
-#               current task is going through.
-#
-N7::run_tasks() {
-    # the "effective" host list. It gets updated by `run_tasks()' while N7_HOSTS doesn't.
-    local N7_EHOSTS=$(echo $2)
-
-    # export it so this will be available to local tasks.
-    export N7_EHOSTS
-
-    local host ssh_pipe ssh_out ssh_err fd task
-    set -- $1
-
-    for host in $N7_EHOSTS; do
+N7::ssh_connect() {
+    local host ssh_pipe ssh_out ssh_err fd
+    for host in $*; do
         ssh_pipe=$(N7::ssh_read_pipe $host)
+        if [ -e "$ssh_pipe" ]; then
+            continue
+        fi
         ssh_out=$(N7::ssh_out_file $host)
         ssh_err=$(N7::ssh_err_file $host)
         mkfifo "$ssh_pipe" || N7::die "Failed making named pipes for ssh!"
@@ -516,24 +503,40 @@ N7::run_tasks() {
         # write end closes.
         exec {fd}>"$ssh_pipe" || N7::die "Failed FD creations and redirections"
         N7_SSH_PIPE_FDs+=($fd)
-
-        # define task functions on the remote host
-        for task in ${N7_TASKS[*]}; do
-            N7::send_cmd "$(declare -f $task)" $host
-        done
-
-        # define built-in N7 remote functions on the remote host
-        local func
-        for func in $(declare -f | grep ^N7::remote:: | cut -d' ' -f1); do
-            N7::send_cmd "$(declare -f $func)" $host
-        done
-        # and any required functions and variables... FIXME:
-        N7::send_cmd "$(declare -f N7::get_sudo N7::q N7::qm)" $host
-        N7::send_cmd "export N7_SUDO=$(N7::q "$N7_SUDO")" $host
     done
+}
 
+# N7::run_tasks <"task_name1 task_name2 ..."> ["host1 host2 ..."]
+# 
+# Execute the bash functions(tasks) named on all the hosts specified.
+# Each task will be run on all hosts, and a task must finish its execution on all hosts
+# before the next will be run. If a task execution fails or timed out on a host then
+# that host will be removed from execution of any further tasks unless the task has
+# its IGNORE_STATUS option set and is not timed out.
+#
+# Moreover, the following environment variables will be available to all tasks:
+#
+#   N7_TASK_IDX - The index number(0-based) of the current task.
+#   N7_EHOSTS - "The effective hosts". A space separated list of hosts that the
+#               current task is going through.
+#
+N7::run_tasks() {
+    # the "effective" host list. It gets updated by `run_tasks()' while N7_HOSTS doesn't.
+    local N7_EHOSTS=$(echo $2)
+
+    # export it so this will be available to local tasks.
+    export N7_EHOSTS
+
+    set -- $1
+
+    local host task
     local N7_TASK_IDX=-1 rc no_subshell sudo
     export N7_TASK_IDX
+
+    export N7_TASKS # for local tasks
+
+    N7::ssh_connect $N7_EHOSTS
+
     while [[ $# > 0 && -n "$N7_EHOSTS" ]]; do
         task=$1; shift
         let ++N7_TASK_IDX
@@ -608,9 +611,9 @@ N7::local::utils::trap() {
 N7::local::commands::remote() {
     local host hosts=$(N7::ssh_ehosts)
     for host in $hosts; do
-        [ "$N7_NO_SUBSHELL" ] && N7::send_cmd '(' $host
+        [ "$N7_NO_SUBSHELL" ] || N7::send_cmd '(' $host
         N7::send_cmd "$1"                         $host
-        [ "$N7_NO_SUBSHELL" ] && N7::send_cmd ')' $host
+        [ "$N7_NO_SUBSHELL" ] || N7::send_cmd ')' $host
         N7::send_eot_line $host
     done
     hosts=$(N7::wait_for_task $N7_TASK_IDX $hosts)
@@ -627,6 +630,11 @@ N7::local::commands::remote() {
 #
 # Return 0 if all functions are defined successfully on the remote hosts;
 # return 1 otherwise.
+#
+# Alternatively, you can define your remote helper functions within
+# a remote task function that declares ': NO_SUBSHELL=1' so that when
+# the task is run remotely, all the functions within it will be defined
+# globally for later tasks.
 #
 # This function can only be used from a local task.
 #
@@ -723,7 +731,7 @@ N7::local::files::cp() {
 # Copy a file from localhost to the remote hosts.
 # The file content is subject to parameter expansions and process substitutions.
 #
-# All options are passed to N7::local::files::scp.
+# All options are passed to N7::local::files::cp.
 #
 # Any host it fails to copy the file to will be removed from $N7_EHOSTS.
 # Return 0 if the file is copied to all hosts successfully; return 1 otherwise.
@@ -809,7 +817,7 @@ N7::local::files::scp() {
 
 # N7::local:tasks::get_stdout <hostname> <task_idx>
 #
-# Output the stdout of the last task with <task_idx> from <hostname>
+# Output the stdout of the task with <task_idx> from <hostname>
 #
 N7::local::tasks::get_stdout() {
     [ "$2" -ge 0 ] &&
@@ -827,7 +835,7 @@ N7::local::tasks::get_stdout() {
 
 # N7::local:tasks::get_stderr <hostname> <task_idx>
 #
-# Output the stderr of the last task with <task_idx> from <hostname>
+# Output the stderr of the task with <task_idx> from <hostname>
 #
 eval "$(declare -f N7::local::tasks::get_stdout \
          | sed -e 's/stdout/stderr/
@@ -836,58 +844,127 @@ eval "$(declare -f N7::local::tasks::get_stdout \
 
 #-------------
 
-# N7::remote::files::file <path> [options]
+#---N7 Default Intializing Tasks -----------
+
+# This is the very first task that gets run by N7 to bootstrap remote
+# tasks, and environment variables.
 #
-# Set file attributes. Options are:
-#
-#   owner  - owner name.
-#   group  - group name.
-#   mode   - file permission mode; only numeric octal digits allowed.
-#   sudo   - sudo before the operation. 1 to use $N7_SUDO, any other
-#            value to use as the command to sudo.
-#
-# This function can be use both remotely and locally.
-#
-N7::remote::files::file() {
-    local path=$(N7::q "$1")
-    declare -A params=()
-    local nv
-    for nv in "$@"; do
-        params[${nv%%=*}]=${nv#*=}
+.N7::init_local() { : LOCAL=1; set -e
+    # define remote tasks on remote hosts
+    local task i=0
+    for task in ${N7_TASKS[*]}; do
+        if [ "$(N7::get_task_opt $i REMOTE)" ]; then
+            N7::local::commands::send_funcs $task
+        fi
+        i=$((++i))
     done
-    local sudo=${params[sudo]}
-    ${sudo:+$(N7::get_sudo "$sudo")} /bin/bash -s -- <<EOF
-        owner=$(N7::q "${params[owner]}")
-        group=$(N7::q "${params[group]}")
-        mode=$(N7::q "${params[mode]}")
-        mode=\${mode:-0\$(printf %o \$((0666 - \$(umask))))}
-        rt=0
-        read u g m < <(stat -c "%U %G %a" $path)
-        if [[ \$owner ]]; then [[ \$u == \$owner ]] || { chown \$owner $path; rt=\$((\$? | rt)); }; fi
-        if [[ \$group ]]; then [[ \$g == \$group ]] || { chgrp \$group $path; rt=\$((\$? | rt)); }; fi
-        if [[ \$mode  ]]; then [[ \$m == \$mode  ]] || { chmod \$mode  $path; rt=\$((\$? | rt)); }; fi
-        exit \$rt
-EOF
+    N7::local::commands::send_env "N7_SUDO=$(N7::q "$N7_SUDO")"
 }
 
-#--------------
+# This is the first remote task run by N7 to setup remote N7 built-ins
+#
+.N7::init_remote() {
+    : REMOTE=1
+    : NO_SUBSHELL=1
+
+    # create N7 runtime directories
+    #FIXME
+
+}
+
+.N7::define_builtins() { : REMOTE=1
+
+    N7::q() { printf "%q\n" "$*"; }
+    N7::qm() {
+        local result=$(printf "%q " "$@")
+        printf "${result% }\n"
+    }
+    N7::get_sudo() {
+        local sudo=${1:-$N7_SUDO}
+        if [ "$sudo" = 1 ]; then echo "$N7_SUDO"; else echo "$sudo"; fi
+    }
+
+
+    #
+    # N7::remote::files::file <path> [options]
+    #
+    # Set file attributes. Options are:
+    #
+    #   owner  - owner name.
+    #   group  - group name.
+    #   mode   - file permission mode; only numeric octal digits allowed.
+    #   sudo   - sudo before the operation. 1 to use $N7_SUDO, any other
+    #            value to use as the command to sudo.
+    #
+    # This function can be use both remotely and locally.
+    #
+    N7::remote::files::file() {
+        local path=$(N7::q "$1")
+        declare -A params=()
+        local nv
+        for nv in "$@"; do
+            params[${nv%%=*}]=${nv#*=}
+        done
+        local sudo=${params[sudo]}
+        ${sudo:+$(N7::get_sudo "$sudo")} /bin/bash -s -- <<EOF
+            owner=$(N7::q "${params[owner]}")
+            group=$(N7::q "${params[group]}")
+            mode=$(N7::q "${params[mode]}")
+            mode=\${mode:-0\$(printf %o \$((0666 - \$(umask))))}
+            rt=0
+            read u g m < <(stat -c "%U %G %a" $path)
+            if [[ \$owner ]]; then [[ \$u == \$owner ]] || { chown \$owner $path; rt=\$((\$? | rt)); }; fi
+            if [[ \$group ]]; then [[ \$g == \$group ]] || { chgrp \$group $path; rt=\$((\$? | rt)); }; fi
+            if [[ \$mode  ]]; then [[ \$m == \$mode  ]] || { chmod \$mode  $path; rt=\$((\$? | rt)); }; fi
+            exit \$rt
+EOF
+    }
+
+}
+# Also run it immediately so they will be available locally as well.
+.N7::define_builtins
+
+
+
+#---------------
 set +e
 
+#N7::run_tasks_on_hosts "tasks..." "hosts..."
+#
+N7::run_tasks_on_hosts() {
+    local tasks=$1 hosts=$2
+    if [ "$N7_SSH_COUNT" ]; then
+        while read hosts; do
+            N7::run_tasks "$tasks" "${hosts}"
+        done < <(tr ' ' '\n' <<<$hosts | paste -d' ' $(seq -f - ${N7_SSH_COUNT}))
+    else
+        N7::run_tasks "$tasks" "$hosts"
+    fi
+}
 
-
+# Load user's .n7 script
 if [ -r "$N7_SCRIPT" ]; then
     source "$N7_SCRIPT" || N7::die "Failed loading $N7_SCRIPT!"
 fi
 N7::load_tasks
 N7::load_task_opts ${N7_TASKS[*]}
 
+
+# Run N7 built-in tasks first
+N7::run_tasks_on_hosts "${N7_BUILTIN_TASKS[*]}" "${N7_HOSTS[*]}" >/dev/null 2>&1 #FIXME: write to a file
+
+# Remove built-in tasks like it never happened
+for i in $(seq 0 $(( ${#N7_BUILTIN_TASKS[*]} - 1)) ); do
+    unset N7_TASK_OPTS_$i
+    unset N7_TASKS[$i]
+done; N7_TASKS=(${N7_TASKS[*]})
+N7::load_task_opts ${N7_TASKS[*]}
+for host in ${N7_HOSTS[*]}; do
+    : > $(N7::ssh_out_file $host)
+    : > $(N7::ssh_err_file $host)
+done
+
+# Run user's N7 tasks
 N7::log "Run id=$N7_RUN_ID -- N7_DIR=$N7_DIR"
-if [ "$N7_SSH_COUNT" ]; then
-    while read hosts; do
-        N7::run_tasks "${N7_TASKS[*]}" "${hosts}"
-    done < <(tr ' ' '\n' <<<${N7_HOSTS[*]} | paste -d' ' $(seq -f - ${N7_SSH_COUNT}))
-    unset hosts
-else
-    N7::run_tasks "${N7_TASKS[*]}" "${N7_HOSTS[*]}"
-fi
+N7::run_tasks_on_hosts "${N7_TASKS[*]}" "${N7_HOSTS[*]}"
 
