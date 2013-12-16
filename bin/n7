@@ -170,9 +170,6 @@ mkdir -p "$N7_DIR" "$N7_DIR/tmp" "$N7_RUNS_DIR" "$N7_RUN_DIR"
 # used for temporarily storing updated N7_EHOSTS by a local task.
 N7_EHOSTS_FILE=$N7_RUN_DIR/.ehosts
 
-# stdout of all local tasks go here.
-N7_LOCAL_OUT_FILE=$N7_RUN_DIR/localhost.out
-
 # where stderr goes during process clean up.
 # mainly used to silence bash's child-process-got-killed message.
 N7_CLEANUP_ERR_FILE=$N7_RUN_DIR/.cleanup.err
@@ -188,6 +185,7 @@ declare -r N7_SUDO
 
 # Where N7 store temporary file on a remote host.
 N7_REMOTE_TMP_DIR=/var/tmp/n7
+N7_REMOTE_RUN_DIR=$N7_REMOTE_TMP_DIR/$N7_RUN_ID
 
 N7_SSH_OPTS=${N7_SSH_OPTS:-"
   -o BatchMode=yes
@@ -292,7 +290,7 @@ N7::load_tasks() {
         done | sort -nk2 | cut -d' ' -f1)
     )
     shopt -u extdebug
-    if [ ${#N7_TASKS[*]} -eq 0 ]; then
+    if [ ${#N7_TASKS[*]} -le ${#N7_BUILTIN_TASKS[*]} ]; then
         N7::log "No tasks are defined!" WARNING
     fi
 }
@@ -435,12 +433,11 @@ N7::wait_for_task() {
     while read _ host _ rc; do
         if [ "$show_output" = 0 ]; then
             out_file=$(N7::ssh_out_file $host)
-            if [ "$task_idx" = 0 ]; then 
-                from_line=1
-            else
-                from_line=$(grep -an "^$N7_EOT $host $((task_idx-1)) " "$out_file" | tail -n1 | cut -d: -f1)
-                let ++from_line
-            fi
+
+            #FIXME: this shoudn't be task_idx - 1 but should be the last remote task's index instead.
+            from_line=$(grep -an "^$N7_EOT $host $((task_idx - 1)) " "$out_file" |
+                    tail -n1 | cut -d: -f1)
+            let ++from_line
             tail -n+$from_line "$out_file" >&2 
         else
             N7::log "$host rc=$rc" >&2
@@ -545,13 +542,18 @@ N7::run_tasks() {
 
         # handle local task, which has no timeout control, and runs in a subshell.
         if [ "$(N7::get_task_opt $N7_TASK_IDX LOCAL)" ]; then
-            ($task) >>"$N7_LOCAL_OUT_FILE"; rc=$?
+            export N7_HOST=localhost; ($task) ; rc=$?
             N7::log "localhost rc=$rc"
             if [ "$rc" != 0 -a ! "$(N7::get_task_opt $N7_TASK_IDX IGNORE_STATUS)" ]; then
                 N7::die "Error running local task #$N7_TASK_IDX: $(N7::get_task_opt $N7_TASK_IDX NAME)"
             fi
+
             # the local task might invoke a function that changes N7_EHOSTS
             N7_EHOSTS=$(N7::ssh_ehosts)
+
+            # FIXME: talk about why this is needed.
+            for host in $N7_EHOSTS; do N7::send_eot_line $host $rc; done
+
             continue
         fi
 
@@ -559,7 +561,11 @@ N7::run_tasks() {
 
         # send the remote task to each host
         for host in $N7_EHOSTS; do
-            N7::send_cmd "export N7_TASK_IDX=$N7_TASK_IDX N7_EHOSTS=\$(echo $N7_EHOSTS)" $host
+            N7::send_cmd " \
+                export N7_TASK_IDX=$N7_TASK_IDX \
+                       N7_EHOSTS=\$(echo $N7_EHOSTS) \
+                       N7_HOST=$(N7::q "$host") \
+                " $host
             [ "$no_subshell" ] || N7::send_cmd '('             $host
                                   N7::send_cmd $task           $host
             [ "$no_subshell" ] || N7::send_cmd ') </dev/null'  $host
@@ -858,7 +864,9 @@ eval "$(declare -f N7::local::tasks::get_stdout \
         fi
         i=$((++i))
     done
-    N7::local::commands::send_env "N7_SUDO=$(N7::q "$N7_SUDO")"
+    N7::local::commands::send_env  \
+        N7_SUDO=$(N7::q "$N7_SUDO") \
+        N7_REMOTE_RUN_DIR=$(N7::q "$N7_REMOTE_RUN_DIR")
 }
 
 # This is the first remote task run by N7 to setup remote N7 built-ins
@@ -868,8 +876,7 @@ eval "$(declare -f N7::local::tasks::get_stdout \
     : NO_SUBSHELL=1
 
     # create N7 runtime directories
-    #FIXME
-
+    mkdir -p "$N7_REMOTE_RUN_DIR"
 }
 
 .N7::define_builtins() { : REMOTE=1
@@ -919,9 +926,20 @@ eval "$(declare -f N7::local::tasks::get_stdout \
             exit \$rt
 EOF
     }
-    
+    N7::remote::tasks::change_file() {
+        local task_idx = ${1:-$N7_TASK_IDX}
+        if [ "$N7_HOST" != "localhost" ]; then
+            echo "$N7_REMOTE_RUN_DIR/task_$task_idx.change"
+        else
+            echo "$N7_RUN_DIR/task_$task_idx.change"
+        fi
+    }
     N7::remote::tasks::touch_change() {
-        [ -e "$N7_TASK_CHANGE_FILE" ] || touch $N7_TASK_CHANGE_FILE
+        local change_file=$(N7::remote::tasks::change_file)
+        [ -e "$change_file" ] || touch "$change_file"
+    }
+    N7::remote::tasks::changed() {
+        [ -e "$(N7::remote::tasks::change_file $1)" ]
     }
 
 }
@@ -947,7 +965,7 @@ N7::run_tasks_on_hosts() {
 }
 
 # Load user's .n7 script
-if [ -r "$N7_SCRIPT" ]; then
+if [ "$N7_SCRIPT" ]; then
     source "$N7_SCRIPT" || N7::die "Failed loading $N7_SCRIPT!"
 fi
 N7::load_tasks
@@ -966,6 +984,8 @@ N7::load_task_opts ${N7_TASKS[*]}
 for host in ${N7_HOSTS[*]}; do
     : > "$(N7::ssh_out_file $host)"
     : > "$(N7::ssh_err_file $host)"
+    N7::send_cmd "echo; echo >&2" $host
+    N7::send_eot_line $host -1 0
 done
 
 
