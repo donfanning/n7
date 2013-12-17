@@ -66,7 +66,7 @@ What it doesn't do
 
   - It doesn't provide idempotent tasks. However, you can easily reuse Ansible's
     [modules](http://ansibleworks.com/docs/modules.html) in your N7 local tasks.
-    See the examples directory for a wrapper. *TBD*
+    Better integration with Ansible's modules is planned.
 
 
 Example runs
@@ -157,21 +157,27 @@ By default a task is a local task. Setting `LOCAL` or `REMOTE` will change its
 type, and without both it defaults to `N7_DEFAULT_TASK_TYPE`, which can be set
 also in your script. 
 
-A remote task by default runs in a subshell on each remote host unless the
-`NO_SUBSHELL` task option is set, and by default a task that returns a
-non-zero status is considered a failed task, unless the `IGNORE_STATUS` task
-option is set, and N7 will then not execute any subsequent tasks on the host
-that failed the task.
+A task by default runs in a subshell unless the `NO_SUBSHELL` task option is set,
+and by default a task that returns a non-zero status is considered a failed task,
+unless the `IGNORE_STATUS` task option is set, and N7 will then not execute any
+subsequent tasks on the host that failed the task.
 
-A local task has no timeout and is always executed in a subshell of the N7
-process(ie, `TIMEOUT` and `NO_SUBSHELL` have no effects on local tasks), and
-therefore has read access to all N7's [environment variables](#n7-environment-variables)
-and can call N7's [built-in](#n7-built-in-functions) functions. 
+A local task has no timeout(ie, `TIMEOUT` has no effects on local tasks), and
+therefore has read access to all N7's [functions](#n7-built-in-functions),
+global variables, and [environment variables](#n7-environment-variables).
 
 All remote tasks will be automatically defined on remote hosts, but since a remote
 task may need to call some helper functions defined in the `.n7` script, we need to
-tell N7 to also define those helper functions remotely for us. This can be done
-by calling the `N7::func::tasks::send_funcs` function from a local task. Example:
+tell N7 to also define those helper functions remotely for us. This can be done in
+two ways:
+
+    1. By defining the fucntions in a remote task. Example:
+        .init() { REMOTE=1
+            helper_1() { echo "my helper func"; }  
+            helper_2() { echo "my helper func"; }
+        }
+
+    2. By calling the `N7::func::tasks::send_funcs` function from a local task. Example:
 
         .init() {
             set -e
@@ -189,16 +195,7 @@ by calling the `N7::func::tasks::send_funcs` function from a local task. Example
 
 Task Options
 -------------
-<table>
-<tr><th align=left valign=top>DESCRIPTION</th><td>describe what the task does.</td></tr>
-<tr><th align=left valign=top>TIMEOUT</th><td>timeout in seconds for the remote task.</td></tr>
-<tr><th align=left valign=top>NO_SUBSHELL</th>
-    <td>set it to run the remote task directly in the N7 login shell.</td></tr>
-<tr><th align=left valign=top>LOCAL</th>
-    <td>set it to run the task locally; otherwise a task is a remote task by default.</td></tr>
-<tr><th align=left valign=top>IGNORE_STATUS</th>
-    <td>set it to run the remaining tasks even if the task exited with a non-zero exit status. </td></tr>
-</table>
+TBD
 
 
 N7 Environment Variables

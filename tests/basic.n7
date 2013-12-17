@@ -1,0 +1,106 @@
+#!/bin/bash
+
+# Some basic tests
+
+
+assert_last_stdout() {
+    local host output
+    for host in $N7_EHOSTS; do
+        output=$(N7::local::tasks::get_stdout $host $((N7_TASK_IDX - 1)))
+        if [ "$output" != "$1" ]; then
+            echo "$host: Failed"
+            echo "Expecting: $1"
+            echo "      Got: $output"
+
+        else
+            echo "$host: Success"
+        fi
+    done
+}
+eval "$(declare -f assert_last_stdout | sed -e 's/stdout/stderr/')"
+
+
+
+.test_echo_to_stdout_stderr() { : REMOTE=1
+    : DESCRIPTION="This task simply echo string to stdout and stderr."
+    echo 'Hello World!'
+    echo 'Hello N7!' >&2
+}
+.check_echo_to_stdout_stderr() {
+    : LOCAL=1
+    assert_last_stdout "Hello World!"
+    assert_last_stderr "Hello N7!"
+}
+
+.test_task_ordering_a() {
+    : REMOTE=1
+    echo A > /tmp/task.order
+}
+.test_task_ordering_b() {
+    : REMOTE=1
+    echo B >> /tmp/task.order
+}
+.test_task_ordering_c() {
+    : REMOTE=1
+    echo C >> /tmp/task.order
+}
+.check_task_ordering_a_b_c() {
+    : REMOTE=1
+    local out=$(echo $(</tmp/task.order))
+    [ "A B C" = "$out" ] &&
+        echo "$N7_HOST: Success" ||
+        echo "$N7_HOST: Failed - $out"
+}
+
+SOME_VAR=1234
+export SOME_ENV_VAR=hohoho
+.test_local_task_subshell_and_vars() {
+    : LOCAL=1
+    : TIMEOUT=1  # this should have no effects
+
+    N7::is_int "$N7_TASK_IDX" && echo OK || echo FAILED
+    [ "$N7_EHOSTS" ] && echo OK || echo FAILED
+    [ "$N7_HOST" = localhost ] && echo OK || echo FAILED
+
+    sleep 2 # not gonna timeout
+
+    [ "$SOME_VAR" = 1234 ] && echo OK || echo FAILED
+    [ "$SOME_ENV_VAR" = hohoho ] && echo OK || echo FAILED
+    SOME_VAR="not changed"
+    SOME_ENV_VAR=whatever
+}
+.check_local_task_subshell_and_vars() {
+    : LOCAL=1
+    [ "$SOME_VAR" = 1234 ] && echo OK || echo FAILED
+    [ "$SOME_ENV_VAR" = hohoho ] && echo OK || echo FAILED
+}
+
+
+PID=$$
+not_a_task() { : LOCAL=1
+    echo "This is not a task, it won't ever be run by N7." > /tmp/not_a_task.$PID
+}
+.check_last_func_is_not_a_task() { : LOCAL=1
+    [ ! -e /tmp/not_a_task.$PID ] &&
+        echo "$N7_HOST: Success" ||
+        echo "$N7_HOST: Failed - /tmp/not_a_task.$PID exists!"
+}
+
+CAPTURED=
+.test_capture_local_task() {
+    : LOCAL=1
+    : NO_SUBSHELL=1
+    CAPTURED='this line should be captured'
+}
+.check_capture_local_task() {
+    : LOCAL=1
+    [ "$CAPTURED" = "this line should be captured" ] &&
+        echo "$N7_HOST: Success" ||
+        echo "$N7_HOST: Failed - $last_local_stdout"
+}
+
+
+
+
+
+
