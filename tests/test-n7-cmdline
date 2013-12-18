@@ -1,0 +1,45 @@
+#!/bin/bash
+#
+
+
+HOSTS=${*:?"Please provide hosts as cmdline args!"}
+
+
+OUTPUT_PREFIX=$(openssl rand -hex 8)
+
+
+# Test host deduplication
+nlines=$(n7 -m $(tr ' ' , <<<"$HOSTS $HOSTS") -v QUIET "echo $OUTPUT_PREFIX testing" | grep ^$OUTPUT_PREFIX | wc -l)
+[ "$nlines" = $# ] && echo "Failed: $LINENO"
+
+
+# Test task timeout
+echo $HOSTS | n7 -o -s <(cat <<EOF
+    .test_timeout() {
+        : REMOTE=1
+        : TIMEOUT=2
+        sleep 3
+        echo "$OUTPUT_PREFIX You won't see this."
+    }
+EOF
+) | grep ^$OUTPUT_PREFIX && echo "Failed: $LINENO"
+
+
+# Test task status
+echo $HOSTS | n7 -o -s <(cat <<EOF
+    .task_0() { : REMOTE=1; echo "this is task 0; next task will fail"; }
+    .task_1() { : REMOTE=1; return 1; }
+    .task_2() { : REMOTE=1; echo "$OUTPUT_PREFIX this task won't be executed."; }
+EOF
+) | grep ^$OUTPUT_PREFIX && echo "Failed: $LINENO"
+
+
+
+# Test task ignore status
+echo $HOSTS | n7 -o -s <(cat <<EOF
+    .task_0() { : REMOTE=1; echo "this is task 0; next task will fail"; }
+    .task_1() { : REMOTE=1; : IGNORE_STATUS=1; return 1; }
+    .task_2() { : REMOTE=1; echo "$OUTPUT_PREFIX this task will still be executed."; }
+EOF
+) | grep ^$OUTPUT_PREFIX >/dev/null || echo "Failed: $LINENO"
+

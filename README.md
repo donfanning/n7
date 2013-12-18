@@ -93,9 +93,8 @@ none            4.0G  4.1k  4.0G   1% /run/shm
 
 Installation
 -------------
-N7 is developed against Bash version 4.2, though it should work with any Bash
-version >= 4. Additionally, it requires OpenSSH and GNU coreutils, which should
-be already installed if you are running Linux.
+N7 is developed against Bash version 4.2. Additionally, it requires OpenSSH
+and GNU coreutils, which should be already installed if you are running Linux.
 
 On Mac, you can install GNU coreutils using Homebrew. However, N7 expects the
 tools to be without the g-prefix. Specifically, the dependency on GNU coreutils

@@ -248,10 +248,10 @@ N7::send_eot_line() {
     local changed_f=$(N7::remote::tasks::change_file)
 
     # the line is: <eot_hash> <hostname> <task_index|-1> <exit_status|$?> <changed|->
-    local line="$N7_EOT $1 ${N7_TASK_IDX:--1} ${2:-\$?} \
+    local line="$N7_EOT $1 ${N7_TASK_IDX:--1} ${2:-\$N7_RC} \
                \$([ -e $(N7::q "$changed_f") ] && echo changed || echo -)"
 
-    N7::send_cmd "echo ; echo $line; echo >&2; echo $line >&2" ${1:?'Empty host!'}
+    N7::send_cmd "N7_RC=\$?; echo ; echo $line; echo >&2; echo $line >&2" ${1:?'Empty host!'}
     #
     # NOTE: we always output a newline before sending the EOT line so
     #       that the EOT line will always be on its own line.
@@ -547,9 +547,9 @@ N7::run_tasks() {
 
     N7::ssh_connect $N7_EHOSTS
 
-    local host task rc no_subshell sudo new_hosts
+    local host task rc no_subshell sudo hosts
 
-    while [[ $# > 0 && -n "$N7_EHOSTS" ]]; do
+    while [[ $# > 0 && $N7_EHOSTS ]]; do
         task=$1; shift
         let ++N7_TASK_IDX
         no_subshell=$(N7::get_task_opt $N7_TASK_IDX NO_SUBSHELL)
@@ -590,9 +590,9 @@ N7::run_tasks() {
             N7::send_eot_line $host
         done
 
-        new_hosts=$(N7::wait_for_task $N7_TASK_IDX $N7_EHOSTS)
+        hosts=$(N7::wait_for_task $N7_TASK_IDX $N7_EHOSTS)
         N7::show_task_outputs $N7_TASK_IDX $N7_EHOSTS
-        N7_EHOSTS=$new_hosts
+        N7_EHOSTS=$hosts
     done
 }
 
@@ -994,22 +994,26 @@ N7::load_task_opts ${N7_TASKS[*]}
 # Run N7 built-in tasks first
 N7::run_tasks_on_hosts "${N7_BUILTIN_TASKS[*]}" "${N7_HOSTS[*]}" >>"$N7_INTERNAL_ERR_FILE" 2>&1
 
-# Remove built-in tasks like it never happened
-for i in $(seq 0 $(( ${#N7_BUILTIN_TASKS[*]} - 1)) ); do
-    unset N7_TASK_OPTS_$i
-    unset N7_TASKS[$i]
-done; N7_TASKS=(${N7_TASKS[*]})
-N7::load_task_opts ${N7_TASKS[*]}
-for host in ${N7_HOSTS[*]}; do
-    : > "$(N7::ssh_out_file $host)"
-    : > "$(N7::ssh_err_file $host)"
-    # ssh doesn't know that we just truncated the files. This results in
-    # null bytes at the beginning of the files. So, we write an EOT line
-    # with task id == -1 to make the output of task 0 starts on a newline,
-    # and to avoid the null bytes from appearing as task 0's output.
-    N7::send_eot_line $host -1 0
-done
+N7::scope_do() {
+    local i host length=${#N7_BUILTIN_TASKS[*]}
 
+    # Remove built-in tasks like it never happened
+    for ((i=0; i < length; i++)); do
+        unset N7_TASK_OPTS_$i
+        unset N7_TASKS[$i]
+    done
+    N7_TASKS=(${N7_TASKS[*]})
+    N7::load_task_opts ${N7_TASKS[*]}
+    for host in ${N7_HOSTS[*]}; do
+        : > "$(N7::ssh_out_file $host)"
+        : > "$(N7::ssh_err_file $host)"
+        # ssh doesn't know that we just truncated the files. This results in
+        # null bytes at the beginning of the files. So, we write an EOT line
+        # with task id == -1 to make the output of task 0 starts on a newline,
+        # and to avoid the null bytes from appearing as task 0's output.
+        N7::send_eot_line $host -1 0
+    done
+}; N7::scope_do; unset -f N7::scope_do
 
 # Run user's N7 tasks
 N7::log "Run id=$N7_RUN_ID -- N7_DIR=$(N7::q "$N7_DIR") N7_EOT=$N7_EOT"
