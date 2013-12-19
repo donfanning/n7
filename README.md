@@ -10,10 +10,12 @@ Introduction
 
 <pre>
 $ n7 -h
-Usage: n7 [options] [cmd1 cmd2 ...]
+Usage: n7 [options] [arg1 arg2 ...]
 
-Each command, if provided, will be run as a N7 task with default task options.
-
+Each argument, if provided, will be wrapped and run in a N7 *remote* task.
+However, If the -s option is provided then each argument will be passed to
+the N7 script as command line arguments.
+    
 Options:
   -h          Show this help. 
 
@@ -23,10 +25,14 @@ Options:
   -s FILE     Source and execute tasks in FILE after running the commands
               specified on the command line.
 
-  -v LEVEL    Set the verbose level. Defaults to INFO.
-              Levels available: DEBUG INFO WARNING ERROR FATAL
+  --          Mark the end of command-line options. The rest of command line
+              arguments won't be parsed as options to n7. This might be
+              useful for passing options specific to a n7 script.
 
-  -o          Show task stdout at end of the task from each host.
+  -v LEVEL    Set the verbose level. Defaults to INFO.
+              Levels available: DEBUG INFO WARNING ERROR FATAL QUIET
+
+  -o          Show task stdout at the end of a task from each host.
               Local and command-line task outputs are always shown unless you
               redirect them in the task.
 
@@ -35,7 +41,6 @@ Options:
               stdout and stderr files from each remote host, etc.
 
   -p COUNT    Limit the number of parallel SSH processes to COUNT at a time.
-               
 </pre>
 
 
@@ -205,9 +210,14 @@ You can also use `N7::local::commands::send_env` to send local vars to remote ho
 
 
 Code reuse can be done at the function level or at the script level.
-Sourcing a file that has tasks defined in it *WILL NOT* cause the tasks to be added to
-the task execution list. However, you can invoke another `.n7` script, passing it
-the current list of hosts as well as a list of arguments to other arguments.
+Task level reuse(ie, sourcing a file with task definitions) is currently not
+available, but might be supported in the future. Therefore, sourcing a file
+that has tasks defined in it *WILL NOT* cause the tasks to be added to
+the task execution list.
+
+However, you can invoke a n7 subshell using the `N7::local::commands::n7`
+function, passing it an n7 script or you can run `n7` directly passing it a
+different set of hosts and a n7 script.
 
          N7::local::commands::n7 -s setup-nginx.n7 -- -a -b value arg1 arg2 arg3
 
