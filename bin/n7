@@ -186,7 +186,8 @@ declare -r N7_DIR N7_RUN_ID N7_RUNS_DIR N7_RUN_DIR
 mkdir -p "$N7_DIR" "$N7_DIR/tmp" "$N7_RUNS_DIR" "$N7_RUN_DIR"
 
 # used for temporarily storing updated N7_EHOSTS by a local task.
-N7_EHOSTS_FILE=$N7_RUN_DIR/.ehosts
+N7_EHOSTS_FILE=${N7_EHOSTS_FILE:-$N7_RUN_DIR/.ehosts}
+declare -r N7_EHOSTS_FILE
 
 # where stderr goes during N7 init or process clean up.
 # mainly used to silence N7's init task outputs and 
@@ -729,6 +730,13 @@ N7::local::commands::send_env() {
     return $?
 }
 
+# N7::local::commands::n7 [options] [arg1 arg2 ...]
+#
+# Run n7 in a subshell with the current effective hosts.
+#
+N7::local::commands::n7() {
+    echo $N7_EHOSTS | N7_EHOSTS_FILE=$N7_EHOSTS_FILE "$0" "$@"
+}
 
 # N7::local::files::cp <local_src_path> <remote_dest_path> [options]
 #

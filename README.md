@@ -202,15 +202,16 @@ You can also use `N7::local::commands::send_env` to send local vars to remote ho
             echo var3=$var3
         }
 
+
+
 Code reuse can be done at the function level or at the script level.
 Sourcing a file that has tasks defined in it *WILL NOT* cause the tasks to be added to
 the task execution list. However, you can invoke another `.n7` script, passing it
 the current list of hosts as well as a list of arguments to other arguments.
 
+         N7::local::commands::n7 -s setup-nginx.n7 -- -a -b value arg1 arg2 arg3
 
-        echo $N7_EHOSTS | n7 -s setup-nginx.n7 ': LOCAL=1; : NO_SUBSHELL=1; OPT1=abc OPT2=123'
-        echo $N7_EHOSTS | n7 -s setup-nginx.n7 -- -a -b value arg1 arg2 arg3
-
+FIXME: ...
 
 
 Task Options
@@ -267,6 +268,7 @@ N7 Built-In Functions
 N7::local::commands::remote
 N7::local::commands::send_env
 N7::local::commands::send_funcs
+N7::local::commands::n7
 
 N7::local::files::cp
 N7::local::files::cp_tpl
