@@ -43,3 +43,9 @@ echo $HOSTS | n7 -o -s <(cat <<EOF
 EOF
 ) | grep ^$OUTPUT_PREFIX >/dev/null || echo "Failed: $LINENO"
 
+
+# Test n7 script command-line args
+#FIXME
+
+
+exit 0

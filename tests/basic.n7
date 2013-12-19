@@ -1,8 +1,14 @@
 #!/bin/bash
+set -e
 
 # Some basic tests
 
+
 source "$(dirname "$N7_SCRIPT")/setup.sh"
+.init() {
+    N7::local::commands::send_funcs .setup
+    N7_NO_SUBSHELL=1 N7::local::commands::remote .setup
+}
 
 .test_echo_to_stdout_stderr() {
     : DESCRIPTION="This task simply echo string to stdout and stderr."
@@ -78,3 +84,5 @@ CAPTURED=
     assert_eq_str "$CAPTURED" "this line should be captured"
 }
 
+
+.

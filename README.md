@@ -153,8 +153,8 @@ the first non-null shell command. Comments are allowed. Example:
         }
 
 By default a task is a local task. Setting `LOCAL` or `REMOTE` will change its
-type, and without both it defaults to `N7_DEFAULT_TASK_TYPE`, which can be set
-also in your script. 
+type, and without both it defaults to `N7_DEFAULT_TASK_TYPE`, which can also
+be set in your script. 
 
 A task by default runs in a subshell unless the `NO_SUBSHELL` task option is set,
 and by default a task that returns a non-zero status is considered a failed task,
@@ -171,16 +171,15 @@ tell N7 to also define those helper functions remotely for us. This can be done 
 two ways:
 
     1. By defining the fucntions in a remote task. Example:
-        .init() { REMOTE=1
+        .init() { : REMOTE=1
             helper_1() { echo "my helper func"; }  
             helper_2() { echo "my helper func"; }
         }
 
-    2. By calling the `N7::func::tasks::send_funcs` function from a local task. Example:
+    2. By calling the `N7::local::commands::send_funcs` function from a local task. Example:
 
         .init() {
-            set -e
-            N7::func::tasks::send_funcs helper_1 helper_2
+            N7::local::commands::send_funcs helper_1 helper_2
         }
         .my_task() {
             helper_1
@@ -190,39 +189,111 @@ two ways:
         helper_1() { echo "my helper func"; }
         helper_2() { echo "my helper func"; }
 
+You can also use `N7::local::commands::send_env` to send local vars to remote hosts. Example:
+
+        var2="hello world"
+
+        .init() {
+            N7::local::commands::send_env var1=123 "var2=$var2" var3=test
+        }
+        .my_task() { : REMOTE=1
+            echo var1=$var1
+            echo var2=$var2
+            echo var3=$var3
+        }
+
+Code reuse can be done at the function level or at the script level.
+Sourcing a file that has tasks defined in it *WILL NOT* cause the tasks to be added to
+the task execution list. However, you can invoke another `.n7` script, passing it
+the current list of hosts as well as a list of arguments to other arguments.
+
+
+        echo $N7_EHOSTS | n7 -s setup-nginx.n7 ': LOCAL=1; : NO_SUBSHELL=1; OPT1=abc OPT2=123'
+        echo $N7_EHOSTS | n7 -s setup-nginx.n7 -- -a -b value arg1 arg2 arg3
+
 
 
 Task Options
 -------------
-TBD
+<pre>
+  DESCRIPTION     # describe what the task does.
+  TIMEOUT         # timeout in seconds for the remote task.
+  NO_SUBSHELL     # set it to run the task directly in the N7 login shell.
+
+  LOCAL           # set it to run the task locally.
+  REMOTE          # set it to run the task remotely.
+
+  #Note: If both LOCAL and REMOTE are set then the which ever is set
+  #      later overrides the former; if neither LOCAL nor REMOTE is set
+  #      then, the task is of the $N7_DEFAULT_TASK_TYPE, which defaults to
+  #      LOCAL.
+
+  IGNORE_STATUS   # set it to run the remaining tasks even if the task exited
+                  # with a non-zero exit status. 
+</pre>
 
 
 N7 Environment Variables
 -------------------------
-WIP!, check out the source!
 
- - `N7_DIR`
- - `N7_SCRIPT`
- - `N7_HOSTS`
- - `N7_EHOSTS`
- - `N7_SSH_OPTS`
- - `N7_RUN_DIR`
- - `N7_TASK_TIMEOUT`
- - ...
+N7_DIR
+N7_RUNS_DIR
+N7_RUN_DIR
+
+N7_REMOTE_TMP_DIR
+N7_REMOTE_RUN_DIR
+
+N7_SCRIPT
+
+N7_HOSTS
+N7_EHOSTS
+N7_HOST
+
+N7_SSH_CMD
+N7_SSH_OPTS
+N7_SUDO
+
+N7_DEFAULT_TASK_TYPE
+N7_TASK_TIMEOUT
+N7_TASKS
+N7_EOT
+N7_TASK_IDX
+
 
 
 N7 Built-In Functions
 ----------------------
-WIP!, check out the source!
 
- - `N7::func::tasks::send_funcs`
- - `N7::func::tasks::send_env`
- - `N7::func::tasks::get_stdout`
- - `N7::func::tasks::get_stderr`
- - `N7::func::files::cp`
- - `N7::func::files::cp_tpl`
- - `N7::func::files::scp`
- - ...
+N7::local::commands::remote
+N7::local::commands::send_env
+N7::local::commands::send_funcs
+
+N7::local::files::cp
+N7::local::files::cp_tpl
+N7::local::files::scp
+
+N7::local::tasks::get_stdout
+N7::local:tasks::get_stderr
+N7::local:tasks::get_stdout
+
+N7::local::utils::trap
+
+
+N7::remote::files::file
+
+N7::remote::tasks::change_file
+N7::remote::tasks::changed
+N7::remote::tasks::touch_change
+
+N7::q
+N7::qm
+N7::is_int
+N7::is_num
+
+
+N7::log
+N7::die
+N7::mktemp
 
 
 
