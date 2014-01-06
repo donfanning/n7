@@ -280,7 +280,7 @@ N7::send_eot_line() {
 N7::is_num() { [ "$1" ] && printf "%.0f" "$1" >/dev/null 2>&1; }
 N7::is_int() { [ "$1" ] && printf "%d" "$1" >/dev/null 2>&1; }
 N7::mktemp() {
-    tmpdir=$n7_run_dir mktemp -t .tmp.XXXXXXXXXXX ||
+    tmpdir=$N7_RUN_DIR mktemp -t .tmp.XXXXXXXXXXX ||
         N7::die "Failed creating a temporary file!"
 }
 N7::ssh_ehosts() {
