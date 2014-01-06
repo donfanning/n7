@@ -1,3 +1,5 @@
+
+
 N7 - Ad Hoc Task Automation and Orchestration in Bash.
 -------------------------------------------------------
 **WARNING**
@@ -46,7 +48,7 @@ Options:
 
 Features
 ---------
-  - It's just Bash. It should run anywhere with Bash + GNU Coreutils + OpenSSH.
+  - It's just Bash. It should run anywhere with Bash + GNU Coreutils + OpenSSL.
 
   - Use it as a SSH-in-a-loop for running commands over multiple hosts in
     parallel.
@@ -247,65 +249,65 @@ Task Options
 N7 Environment Variables
 -------------------------
 
-N7_DIR
-N7_RUNS_DIR
-N7_RUN_DIR
+- N7_DIR
+- N7_RUNS_DIR
+- N7_RUN_DIR
 
-N7_REMOTE_TMP_DIR
-N7_REMOTE_RUN_DIR
+- N7_REMOTE_TMP_DIR
+- N7_REMOTE_RUN_DIR
 
-N7_SCRIPT
+- N7_SCRIPT
 
-N7_HOSTS
-N7_EHOSTS
-N7_HOST
+- N7_HOSTS
+- N7_EHOSTS
+- N7_HOST
 
-N7_SSH_CMD
-N7_SSH_OPTS
-N7_SUDO
+- N7_SSH_CMD
+- N7_SSH_OPTS
+- N7_SUDO
 
-N7_DEFAULT_TASK_TYPE
-N7_TASK_TIMEOUT
-N7_TASKS
-N7_EOT
-N7_TASK_IDX
+- N7_DEFAULT_TASK_TYPE
+- N7_TASK_TIMEOUT
+- N7_TASKS
+- N7_EOT
+- N7_TASK_IDX
 
 
 
 N7 Built-In Functions
 ----------------------
 
-N7::local::commands::remote
-N7::local::commands::send_env
-N7::local::commands::send_funcs
-N7::local::commands::n7
+- N7::local::commands::remote
+- N7::local::commands::send_env
+- N7::local::commands::send_funcs
+- N7::local::commands::n7
 
-N7::local::files::cp
-N7::local::files::cp_tpl
-N7::local::files::scp
+- N7::local::files::cp
+- N7::local::files::cp_tpl
+- N7::local::files::scp
 
-N7::local::tasks::get_stdout
-N7::local:tasks::get_stderr
-N7::local:tasks::get_stdout
+- N7::local::tasks::get_stdout
+- N7::local:tasks::get_stderr
+- N7::local:tasks::get_stdout
 
-N7::local::utils::trap
-
-
-N7::remote::files::file
-
-N7::remote::tasks::change_file
-N7::remote::tasks::changed
-N7::remote::tasks::touch_change
-
-N7::q
-N7::qm
-N7::is_int
-N7::is_num
+- N7::local::utils::trap
 
 
-N7::log
-N7::die
-N7::mktemp
+- N7::remote::files::file
+
+- N7::remote::tasks::change_file
+- N7::remote::tasks::changed
+- N7::remote::tasks::touch_change
+
+- N7::q
+- N7::qm
+- N7::is_int
+- N7::is_num
+
+
+- N7::log
+- N7::die
+- N7::mktemp
 
 
 
