@@ -1,4 +1,7 @@
 #!/bin/bash
+#@+leo-ver=5-thin
+#@+node:jkuan.20140106102002.1899: * @file basic.n7
+#@@first
 set -e
 
 # Some basic tests
@@ -85,4 +88,48 @@ CAPTURED=
 }
 
 
-.
+.test_cp() {
+    : LOCAL=1
+    N7::local::files::cp "$0" /tmp/cp_file_$PID
+    N7::local::commands::send_env TEST_CP_FNAME=/tmp/cp_file_$PID
+}
+.check_cp_and_file() {
+    : REMOTE=1
+    [ -e $TEST_CP_FNAME ]; assert "Failed copying a local file to remote hosts!"
+    if [ -e $TEST_CP_FNAME ]; then
+        N7::remote::files::file $TEST_CP_FNAME sudo=1 owner=root group=admin mode=600
+        ls -l $TEST_CP_FNAME | grep -- "^-rw-------" | awk '{print $3, $4}' | grep 'root admin'
+        assert "Failed setting file attributes"
+    fi
+}
+    
+.test_cp_with_mode() {
+    : LOCAL=1
+    N7::local::files::cp "$0" /tmp/cp_file_$PID sudo=1 owner=vagrant group=vagrant mode=644
+    N7::local::commands::send_env TEST_CP_FNAME=/tmp/cp_file_$PID
+}
+.check_cp_and_file() {
+    : REMOTE=1
+    [ -e $TEST_CP_FNAME ]; assert "Failed copying a local file to remote hosts!"
+    ls -l $TEST_CP_FNAME | grep -- "^-rw-r--r--" | awk '{print $3, $4}' | grep 'vagrant vagrant'
+    assert "Failed setting file attributes"
+}
+
+
+.test_cp_tpl() {
+    : LOCAL=1
+    N7::local::files::cp_tpl <(echo hello \$PID) /tmp/cp_tpl_$PID
+    N7::local::commands::send_env MY_PID=$PID
+}
+.check_cp_tpl() {
+    : REMOTE=1
+    assert_eq_str "$(</tmp/cp_tpl_$MY_PID)" "hello $MY_PID"
+}
+
+
+.test_n7_sub_process() {
+    : LOCAL=1
+    N7::local::commands::n7 'touch /tmp/nnnn'
+}
+
+#@-leo

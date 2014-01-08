@@ -1,4 +1,7 @@
 #!/bin/bash
+#@+leo-ver=5-thin
+#@+node:jkuan.20140107111208.1904: * @file test-n7-cmdline
+#@@first
 #
 
 
@@ -49,3 +52,4 @@ EOF
 
 
 exit 0
+#@-leo

@@ -1,3 +1,5 @@
+#@+leo-ver=5-thin
+#@+node:jkuan.20140107111208.1905: * @file setup.sh
 .setup() { : REMOTE=1; : NO_SUBSHELL=1
     
     assert_last_stdout() {
@@ -36,3 +38,4 @@
 }
 .setup
 
+#@-leo

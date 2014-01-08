@@ -48,7 +48,8 @@ Options:
 
 Features
 ---------
-  - It's just Bash. It should run anywhere with Bash + GNU Coreutils + OpenSSL.
+  - It's just Bash. It should run on any POSIX-compliant system with 
+    Bash + GNU Coreutils + OpenSSH + OpenSSL installed.
 
   - Use it as a SSH-in-a-loop for running commands over multiple hosts in
     parallel.
@@ -100,8 +101,9 @@ none            4.0G  4.1k  4.0G   1% /run/shm
 
 Installation
 -------------
-N7 is developed against Bash version 4.2. Additionally, it requires OpenSSH
-and GNU coreutils, which should be already installed if you are running Linux.
+N7 is developed against Bash version 4.2. Additionally, it requires OpenSSH,
+OpenSSL and GNU coreutils, which should be already installed if you are running
+Linux.
 
 On Mac, you can install GNU coreutils using Homebrew. However, N7 expects the
 tools to be without the g-prefix. Specifically, the dependency on GNU coreutils
