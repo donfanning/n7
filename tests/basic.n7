@@ -97,7 +97,7 @@ CAPTURED=
     : REMOTE=1
     [ -e $TEST_CP_FNAME ]; assert "Failed copying a local file to remote hosts!"
     if [ -e $TEST_CP_FNAME ]; then
-        N7::remote::files::file $TEST_CP_FNAME sudo=1 owner=root group=admin mode=600
+        sudo=1 N7::remote::files::file $TEST_CP_FNAME owner=root group=admin mode=600
         ls -l $TEST_CP_FNAME | grep -- "^-rw-------" | awk '{print $3, $4}' | grep 'root admin'
         assert "Failed setting file attributes"
     fi
@@ -105,7 +105,7 @@ CAPTURED=
     
 .test_cp_with_mode() {
     : LOCAL=1
-    N7::local::files::cp "$0" /tmp/cp_file_$PID sudo=1 owner=vagrant group=vagrant mode=644
+    sudo=1 N7::local::files::cp "$0" /tmp/cp_file_$PID owner=vagrant group=vagrant mode=644
     N7::local::commands::send_env TEST_CP_FNAME=/tmp/cp_file_$PID
 }
 .check_cp_and_file() {
