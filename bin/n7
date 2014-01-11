@@ -36,7 +36,7 @@ N7::usage() {
       -h          Show this help. 
 
       -m HOSTS    A list of comma separated hosts. Hosts will be read from
-                  STDIN(one host per line) if the -m option is not specified.
+                  STDIN(one host per line) if this option is not specified.
 
       -s FILE     Source and execute tasks in FILE after running the commands
                   specified on the command line.
@@ -656,7 +656,7 @@ fi
 if [ ! "$N7_HOSTS" ]; then N7_HOSTS=$(</dev/stdin); fi
 
 # De-duplicate the hostnames
-N7_HOSTS=$(echo $N7_HOSTS | tr ' ' '\n' | sort | uniq)
+N7_HOSTS=$(echo $(echo $N7_HOSTS | tr ' ' '\n' | sort | uniq))
 declare -r N7_HOSTS
 #FIXME: should use host:port combination rather than just host
 
@@ -920,8 +920,8 @@ N7::local::utils::trap() {
 #@+node:jkuan.20140101001347.1717: *4* N7::local::commands::remote
 #
 # Run cmd on all remote hosts.
-# The command will be run in a subshell unless the env var N7_NO_SUBSHELL is
-# set for the command. Eg, N7_NO_SUBSHELL=1 N7::local::commands::remote "echo hello"
+# The command will be run in a subshell unless the env var no_subshell is
+# set for the command. Eg, no_subshell=1 N7::local::commands::remote "echo hello"
 #
 # Return 0 if the command was run successfully on all remote hosts;
 # return 1 otherwise.
@@ -931,9 +931,9 @@ N7::local::utils::trap() {
 N7::local::commands::remote() {
     local host hosts=$(N7::ssh_ehosts)
     for host in $hosts; do
-        [ "$N7_NO_SUBSHELL" ] || N7::send_cmd '(' $host
-        N7::send_cmd "$1"                         $host
-        [ "$N7_NO_SUBSHELL" ] || N7::send_cmd ')' $host
+        [ "$no_subshell" ] || N7::send_cmd '(' $host
+        N7::send_cmd "$1"                      $host
+        [ "$no_subshell" ] || N7::send_cmd ')' $host
         N7::send_eot_line $host
     done
     hosts=$(N7::wait_for_task $N7_TASK_IDX $hosts)
@@ -966,7 +966,7 @@ N7::local::commands::send_funcs() {
 
     local f hosts=$(N7::ssh_ehosts)
     for f in "${funcs[@]}"; do
-        N7_NO_SUBSHELL=1 N7::local::commands::remote "$f"
+        no_subshell=1 N7::local::commands::remote "$f"
     done
     [ "$N7_EHOSTS" = "$hosts" ]
     return $?
@@ -1033,6 +1033,7 @@ N7::local::files::cp() {
     local host hosts=$(N7::ssh_ehosts)
     local encoded=$(base64 <"$src")
     for host in $hosts; do
+        #FIXME: check PIPESTATUS, base64 might fail too...
         N7::send_cmd "echo \"$encoded\" | base64 --decode |
         (  $_sudo tee $dest >/dev/null &&
                 sudo="$sudo" N7::remote::files::file $dest $(N7::qm "$@")
@@ -1073,6 +1074,10 @@ EOF
     rm -f "$tmpf"
     return $rc
 }
+#FIXME: this evaluate the template at the localhost.
+#       However, often, we'd like to evaluate the template with respect to each
+#       remote host that the file will be copied to, so that information specific
+#       to a remote host can be used in the template.
 #@+node:jkuan.20140101001347.1723: *4* N7::local::files::scp
 #
 # This is an alternative implementation of N7::local::files::cp() that uses scp
@@ -1177,6 +1182,7 @@ N7::run_tasks_on_hosts() {
     else
         N7::run_tasks "$tasks" "$hosts"
     fi
+
     [ "$(N7::ssh_ehosts)" = "$N7_HOSTS" ]
 }
 

@@ -11,13 +11,14 @@
 <find_panel_settings/>
 <vnodes>
 <v t="jkuan.20140102223152.1607"><vh>@button Set headline from N7::*() { in the body</vh></v>
-<v t="jkuan.20140102144155.1729"><vh>@settings</vh>
+<v t="jkuan.20140102144155.1729" a="E"><vh>@settings</vh>
 <v t="jkuan.20140102144155.1730"><vh>@string view-rendered-default-kind = md</vh></v>
 <v t="jkuan.20140102223152.1587"><vh>@enabled-plugins</vh></v>
 <v t="jkuan.20140107194142.1911"><vh>@bool scripting-at-script-nodes = true</vh></v>
 </v>
 <v t="jkuan.20140107194142.1912"><vh>@script</vh></v>
 <v t="jkuan.20140102142439.1727" a="E"><vh>TODOs</vh>
+<v t="jkuan.20140110095317.1920"><vh>find ways to make it easier to debug...</vh></v>
 <v t="jkuan.20140107111208.1901"><vh>ansible module integration</vh></v>
 <v t="jkuan.20140107111208.1903"><vh>show colorized output</vh></v>
 <v t="jkuan.20140107111208.1902"><vh>show also stderr for tasks with non-zero exit status</vh></v>
@@ -62,5 +63,6 @@ for p in c.getSelectedPositions():
 <t tx="jkuan.20140107194142.1911"></t>
 <t tx="jkuan.20140107194142.1912">c.k.simulateCommand('toggle-split-direction')
 </t>
+<t tx="jkuan.20140110095317.1920"></t>
 </tnodes>
 </leo_file>
