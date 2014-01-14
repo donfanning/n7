@@ -385,8 +385,14 @@ N7::ssh_connect() {
 
 # N7::show_task_outputs <task_idx>
 #
-# Print the stdout of the task specified by the task index if the -o command-line
-# option is set. Stdouts of local and command-line tasks are always shown.
+# Print the stdout of the task specified by the task index if the task is a
+# command-line task or if the -o command-line option is set.
+#
+# Standard output of local tasks are always shown unless redirected within the
+# local tasks.
+#
+# Further more, only the outputs delimited by the last EOT line are shown in
+# cases where a task produces multiple EOT lines.
 #
 N7::show_task_outputs() {
     local task_idx=$1; shift
@@ -396,8 +402,9 @@ N7::show_task_outputs() {
 
     local host from_line out_file
     for host in $*; do
+        out_file=$(N7::ssh_out_file $host)
+
         if [ "$show_output" = 0 ]; then
-            out_file=$(N7::ssh_out_file $host)
             from_line=$(grep -an "^$N7_EOT $host $((task_idx - 1)) " "$out_file" |
                     tail -n1 | cut -d: -f1)
             let ++from_line
@@ -413,6 +420,7 @@ N7::show_task_outputs() {
             # because bash always remove trailing newlines from a command
             # substitution.
         else
+            local rc=$(grep -an "^$N7_EOT $host $task_idx" "$out_file" | tail -n1 | cut -d' ' -f4)
             N7::log "$host rc=$rc"
         fi
     done
@@ -918,6 +926,7 @@ N7::local::utils::trap() {
     done
 }
 #@+node:jkuan.20140101001347.1717: *4* N7::local::commands::remote
+# N7::local::commands::remote <cmd>
 #
 # Run cmd on all remote hosts.
 # The command will be run in a subshell unless the env var no_subshell is
@@ -943,6 +952,7 @@ N7::local::commands::remote() {
     return $?
 }
 #@+node:jkuan.20140101001347.1718: *4* N7::local::commands::send_funcs
+# N7::local::commands::send_funcs [func_name1 func_name2 ...]
 #
 # Define the list of functions specified on the remote end.
 # Abort n7 with an error if it can't locate all functions specified.
@@ -972,9 +982,12 @@ N7::local::commands::send_funcs() {
     return $?
 }
 #@+node:jkuan.20140101001347.1719: *4* N7::local::commands::send_env
+# N7::local::commands::send_env [name1=value1 name2=value2 ...]
 #
 # Define environment variables on all remote hosts.
-# Space and special shell characters will need to be quoted.
+#
+# Each name=value pair must be passed to this function as a single argument.
+# (i.e., space and special shell characters will need to be quoted)
 #
 # Return 0 if all functions are defined successfully on the remote hosts;
 # return 1 otherwise.
@@ -997,13 +1010,18 @@ N7::local::commands::send_env() {
     return $?
 }
 #@+node:jkuan.20140101001347.1720: *4* N7::local::commands::n7
+# N7::local::commands::n7 -s <n7script_path> [options] [args]
 #
 # Run n7 in a subshell with the current effective hosts.
+#
+# The current effective hosts will be passed to the n7 subprocess, therefore
+# you should not specify the -m option.
 #
 N7::local::commands::n7() {
     echo $N7_EHOSTS | N7_EHOSTS_FILE=$N7_EHOSTS_FILE "$0" "$@"
 }
 #@+node:jkuan.20140101001347.1721: *4* N7::local::files::cp
+# N7::local::files::cp <local_path> <remote_path> [options]
 #
 # Copy a file from localhost to the remote hosts.
 # Any host it fails to copy the file to will be removed from $N7_EHOSTS.
@@ -1012,9 +1030,20 @@ N7::local::commands::n7() {
 # Options are name=value pairs. Quotes are needed to escape space and other
 # special characters.
 #
-# Known options are: `owner`, `group`, and `mode` for setting the file owner,
-# group, and permission mode of the file. `mode` must be numeric with octal digits.
+# Options:
 #
+#   tplcmd - template command to run to process <local_path> before sending it
+#            to a remote host.
+#
+#            Environment variables available to the invoking local task will
+#            still be availalbe, plus a N7_HOST env var will be set to the
+#            remote host that the file will be copied to.
+#
+#            N7 includes a built-in N7::local::files::bash_tpl function, which 
+#            will process the file as a here-doc.
+#
+# All options allowed by the N7::remote::files::file task are also allowed here.
+# 
 # Environment vars that affect the command:
 #
 #   sudo   - sudo before the operation. 1 to use $N7_SUDO, any other
@@ -1031,15 +1060,28 @@ N7::local::files::cp() {
 
     local _sudo=${sudo:+$(N7::get_sudo "$sudo")}
     local host hosts=$(N7::ssh_ehosts)
-    local encoded=$(base64 <"$src")
-    for host in $hosts; do
-        #FIXME: check PIPESTATUS, base64 might fail too...
-        N7::send_cmd "echo \"$encoded\" | base64 --decode |
-        (  $_sudo tee $dest >/dev/null &&
-                sudo="$sudo" N7::remote::files::file $dest $(N7::qm "$@")
-        )" $host
-        N7::send_eot_line $host '$(( $(echo ${PIPESTATUS[*]} | tr " " \|) ))'
-    done
+
+    local tplcmd=${params[tplcmd]}
+    local encoded
+    if [ "$tplcmd" ]; then
+        for host in $hosts; do
+            encoded=$(base64 <(N7_HOST=$host $tplcmd "$src")) || return $?
+            N7::send_cmd "echo \"$encoded\" | base64 --decode |
+            (  $_sudo tee $dest >/dev/null &&
+                    sudo="$sudo" N7::remote::files::file $dest $(N7::qm "$@")
+            )" $host
+            N7::send_eot_line $host '$(( $(echo ${PIPESTATUS[*]} | tr " " \|) ))'
+        done
+    else
+        encoded=$(base64 <"$src") || return $?
+        for host in $hosts; do
+            N7::send_cmd "echo \"$encoded\" | base64 --decode |
+            (  $_sudo tee $dest >/dev/null &&
+                    sudo="$sudo" N7::remote::files::file $dest $(N7::qm "$@")
+            )" $host
+            N7::send_eot_line $host '$(( $(echo ${PIPESTATUS[*]} | tr " " \|) ))'
+        done
+    fi
 
     hosts=$(N7::wait_for_task $N7_TASK_IDX $hosts)
     echo $hosts >"$N7_EHOSTS_FILE"
@@ -1047,37 +1089,35 @@ N7::local::files::cp() {
     [ "$N7_EHOSTS" = "$hosts" ]
     return $?
 }
-#@+node:jkuan.20140101001347.1722: *4* N7::local::files::cp_tpl
+#@+node:jkuan.20140101001347.1722: *4* N7::local::files::bash_tpl
 #
-# Copy a file from localhost to the remote hosts.
+# Print the contents of a local file to stdout.
 # The file content is subject to parameter expansions and process substitutions.
 #
-# All options are passed to N7::local::files::cp.
+# Output lines(with optional leading space characters) that begin with the
+# character sequence #: will be removed from the output. 
 #
-# Any host it fails to copy the file to will be removed from $N7_EHOSTS.
-# Return 0 if the file is copied to all hosts successfully; return 1 otherwise.
+# In cases where variable assignment is needed, parameter expansion
+# can be used to achieve the desired side effect.
 #
-# This function can only be used from a local task one at a time. 
+# Example template file:
 #
-N7::local::files::cp_tpl() {
-    local src=$1 dest=$2; shift; shift
-    local tmpf=$(N7::mktemp)
+#    #: ${time_start:=$(date +%s)}
+#    Sleeping...
+#    #: $(sleep 2)
+#    Slept for $(($(date +%s) - time_start)) seconds.
+#
+N7::local::files::bash_tpl() {
+    (
 #@@raw
-    (source <(echo "cat <<EOF
-$(<"$src")
+        source <(echo "cat <<EOF
+$(<"$1")
 EOF
+"       )
 #@@end_raw
-")) >"$tmpf" || N7::die "Failed evaluating template: $src"
-
-    N7::local::files::cp "$tmpf" "$dest" "$@"
-    local rc=$?
-    rm -f "$tmpf"
-    return $rc
+    ) | sed '/^[[:space:]]*#:.*$/d'
 }
-#FIXME: this evaluate the template at the localhost.
-#       However, often, we'd like to evaluate the template with respect to each
-#       remote host that the file will be copied to, so that information specific
-#       to a remote host can be used in the template.
+
 #@+node:jkuan.20140101001347.1723: *4* N7::local::files::scp
 #
 # This is an alternative implementation of N7::local::files::cp() that uses scp
@@ -1178,12 +1218,14 @@ N7::run_tasks_on_hosts() {
     if [ "$N7_SSH_COUNT" ]; then
         while read hosts; do
             N7::run_tasks "$tasks" "${hosts}"
+            if [ "$(N7::ssh_ehosts)" != "$hosts" ]; then
+                return $?
+            fi
         done < <(tr ' ' '\n' <<<$hosts | paste -d' ' $(seq -f - ${N7_SSH_COUNT}))
     else
         N7::run_tasks "$tasks" "$hosts"
+        [ "$(N7::ssh_ehosts)" = "$hosts" ]
     fi
-
-    [ "$(N7::ssh_ehosts)" = "$N7_HOSTS" ]
 }
 
 # Load user's .n7 script

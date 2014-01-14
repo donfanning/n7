@@ -10,7 +10,7 @@ set -e
 source "$(dirname "$N7_SCRIPT")/setup.sh"
 .init() {
     N7::local::commands::send_funcs .setup
-    N7_NO_SUBSHELL=1 N7::local::commands::remote .setup
+    no_subshell=1 N7::local::commands::remote .setup
 }
 
 .test_echo_to_stdout_stderr() {
@@ -118,7 +118,7 @@ CAPTURED=
 
 .test_cp_tpl() {
     : LOCAL=1
-    N7::local::files::cp_tpl <(echo hello \$PID) /tmp/cp_tpl_$PID
+    N7::local::files::cp <(echo hello \$PID) /tmp/cp_tpl_$PID tplcmd=N7::local::files::bash_tpl
     N7::local::commands::send_env MY_PID=$PID
 }
 .check_cp_tpl() {
