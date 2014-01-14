@@ -1,7 +1,4 @@
 #!/bin/bash
-#@+leo-ver=5-thin
-#@+node:jkuan.20140101001347.1707: * @file bin/n7
-#@@first
 #
 # N7 - Ad Hoc Task Automation and Orchestration in Bash.
 #
@@ -10,8 +7,6 @@
 
 set -e
 
-#@+others
-#@+node:jkuan.20140101001347.1710: ** configure logging and other core utility functions
 declare -rA N7_LOG_LEVELS=([DEBUG]=-1 [INFO]=0 [WARNING]=1 [ERROR]=2 [FATAL]=3 [QUIET]=99)
 declare -i N7_VERBOSE=${N7_LOG_LEVELS[INFO]}
 
@@ -23,7 +18,6 @@ N7::log() {
     fi
 }
 N7::die() { N7::log "$1" ${2:-ERROR} >&2; exit 1; }
-#@+node:jkuan.20140101001347.1711: ** parse command-line options
 N7::usage() {
   echo "$(echo "\
     Usage: $(basename "$0") [options] [arg1 arg2 ...]
@@ -84,7 +78,6 @@ while getopts ':hs:m:v:okp:-' option; do
 done
 unset option
 shift $(($OPTIND - 1))
-#@+node:jkuan.20140101001347.1712: ** define helper functions
 N7::close_ssh_pipes() {
     local fd pid_pgid host
     for fd in ${N7_SSH_PIPE_FDs[*]}; do
@@ -529,7 +522,6 @@ N7::run_pre_post_task_function() {
 
 
 
-#@+node:jkuan.20140105132438.2228: ** define N7 initialization tasks
 
 # This is the very first task that gets run by N7 to bootstrap remote
 # tasks, and environment variables.
@@ -574,12 +566,9 @@ N7::run_pre_post_task_function() {
         if [ "$sudo" = 1 ]; then echo "$N7_SUDO"; else echo "$sudo"; fi
     }
 
-    #@+<< remote built-ins >>
-    #@+node:jkuan.20140101001347.1713: *3* << remote built-ins >>
+    
     # Functions under the N7::remote "namespace can be used both remotely and locally.
 
-    #@+others
-    #@+node:jkuan.20140101001347.1726: *4* N7::remote::files::file
     #
     # Set file attributes. Options are:
     #
@@ -612,11 +601,8 @@ N7::run_pre_post_task_function() {
             if [[ \$group ]]; then [[ \$g == \$group ]] || { chgrp \$group $path; rt=\$((\$? | rt)); }; fi
             if [[ \$mode  ]]; then [[ \$m == \$mode  ]] || { chmod \$mode  $path; rt=\$((\$? | rt)); }; fi
             exit \$rt
-    #@@raw
 EOF
-    #@@end_raw
     }
-    #@+node:jkuan.20140101001347.1727: *4* N7::remote::tasks::change_file
     N7::remote::tasks::change_file() {
         local task_idx=${1:-$N7_TASK_IDX}
         if [ "$N7_HOST" != "localhost" ]; then
@@ -625,18 +611,14 @@ EOF
             echo "$N7_RUN_DIR/task_$task_idx.change"
         fi
     }
-    #@+node:jkuan.20140101001347.1728: *4* N7::remote::tasks::touch_change
     N7::remote::tasks::touch_change() {
         local change_file=$(N7::remote::tasks::change_file)
         [ -e "$change_file" ] || touch "$change_file"
     }
-    #@+node:jkuan.20140101001347.1729: *4* N7::remote::tasks::changed
     N7::remote::tasks::changed() {
         [ -e "$(N7::remote::tasks::change_file $1)" ]
     }
-    #@+node:jkuan.20140109170044.1919: *4* N7::remote::ansible::check_status
     N7::remote::ansible::check_status() {
-    #@@raw
      python -c '
 import sys, json
 #FIXME: handle single line name=value pairs
@@ -645,17 +627,10 @@ with open(sys.argv[1]) as f:
 if "failed" in data:
     sys.exit(1)
 '    "$N7_ANSIBLE_OUT"
-    #@@end_raw
     }
-    #@-others
-    #@-<< remote built-ins >>
 
 }
-#@+node:jkuan.20140105132438.2229: ** N7 built-in functions
-#@-others
 
-#@+<< globals >>
-#@+node:jkuan.20140101001347.1708: ** << globals >>
 if [ "$N7_SCRIPT" ]; then
     N7_SCRIPT_ARGS=("$@")
 fi
@@ -793,23 +768,13 @@ N7_SSH_PIPE_FDs=()  # file descriptors redirected to write to the SSH read pipes
 # stdout of the last ansible module executed.
 N7_ANSIBLE_OUT=$N7_REMOTE_RUN_DIR/ansible.out
 declare -r N7_ANSIBLE_OUT
-#@-<< globals >>
 
 trap 'N7::cleanup' ABRT ERR TERM QUIT INT EXIT HUP
 
-#@+<< local built-ins >>
-#@+middle:jkuan.20140105132438.2229: ** N7 built-in functions
-#@+node:jkuan.20140101001347.1715: *3* << local built-ins >>
 # Functions under the N7::local "namespace" can only be used locally.
 
-#@+others
-#@+node:jkuan.20140109170044.1915: *4* N7::local::ansible::replace_mod
 N7::local::ansible::replace_mod() {
     python - <<<"$(cat <<'EOF'
-#@+<< ansible module replacer >>
-#@+node:jkuan.20140109170044.1916: *5* << ansible module replacer >>
-#@@language python
-#@@first
 #
 # Tested with Ansible 1.4.4
 #
@@ -857,13 +822,9 @@ mod_dump, mod_style, shebang = replacer.modify_module(mod_src, complex_args, mod
 print mod_style
 print mod_dump
 
-#@-<< ansible module replacer >>
-#@@raw
 EOF
-#@@end_raw
 )" "$@"
 }
-#@+node:jkuan.20140109170044.1917: *4* N7::local::ansible::send_mod
 # N7::local::ansible::send_mod <module_name> [name=value ...]
 #
 # Transfer an ansible module over to the remote hosts.
@@ -880,7 +841,6 @@ N7::local::ansible::send_mod() {
         N7::local::files::cp <(cat) "$tmpf" mode=0755
     )
 }
-#@+node:jkuan.20140109170044.1918: *4* N7::local::ansible::run_mod
 # N7::local::ansible::run_mod <module_name> [name=value ...]
 #   
 # Transfer and run an ansible module with the specified arguments.
@@ -908,7 +868,6 @@ N7::local::ansible::run_mod() {
         "
     fi
 }
-#@+node:jkuan.20140101001347.1716: *4* N7::local::utils::trap
 #
 # Wrapper around Bash's built-in trap command.
 # It takes care not to overwrite existing commands already assigned to a signal.
@@ -925,10 +884,9 @@ N7::local::utils::trap() {
         trap "${cur_cmd:+"$cur_cmd;"} $cmd" $signal
     done
 }
-#@+node:jkuan.20140101001347.1717: *4* N7::local::commands::remote
 # N7::local::commands::remote <cmd>
 #
-# Run cmd on all remote hosts.
+# Run cmd on ALL effective remote hosts.
 # The command will be run in a subshell unless the env var no_subshell is
 # set for the command. Eg, no_subshell=1 N7::local::commands::remote "echo hello"
 #
@@ -951,7 +909,6 @@ N7::local::commands::remote() {
     [ "$N7_EHOSTS" = "$hosts" ]
     return $?
 }
-#@+node:jkuan.20140101001347.1718: *4* N7::local::commands::send_funcs
 # N7::local::commands::send_funcs [func_name1 func_name2 ...]
 #
 # Define the list of functions specified on the remote end.
@@ -981,7 +938,6 @@ N7::local::commands::send_funcs() {
     [ "$N7_EHOSTS" = "$hosts" ]
     return $?
 }
-#@+node:jkuan.20140101001347.1719: *4* N7::local::commands::send_env
 # N7::local::commands::send_env [name1=value1 name2=value2 ...]
 #
 # Define environment variables on all remote hosts.
@@ -1009,7 +965,6 @@ N7::local::commands::send_env() {
     [ "$N7_EHOSTS" = "$hosts" ]
     return $?
 }
-#@+node:jkuan.20140101001347.1720: *4* N7::local::commands::n7
 # N7::local::commands::n7 -s <n7script_path> [options] [args]
 #
 # Run n7 in a subshell with the current effective hosts.
@@ -1020,7 +975,6 @@ N7::local::commands::send_env() {
 N7::local::commands::n7() {
     echo $N7_EHOSTS | N7_EHOSTS_FILE=$N7_EHOSTS_FILE "$0" "$@"
 }
-#@+node:jkuan.20140101001347.1721: *4* N7::local::files::cp
 # N7::local::files::cp <local_path> <remote_path> [options]
 #
 # Copy a file from localhost to the remote hosts.
@@ -1089,7 +1043,6 @@ N7::local::files::cp() {
     [ "$N7_EHOSTS" = "$hosts" ]
     return $?
 }
-#@+node:jkuan.20140101001347.1722: *4* N7::local::files::bash_tpl
 # N7::local::files::bash_tpl <bash_template_file_path>
 #
 # Print the contents of a local file to stdout.
@@ -1115,16 +1068,13 @@ N7::local::files::cp() {
 #
 N7::local::files::bash_tpl() {
     (
-#@@raw
         source <(echo "cat <<EOF
 $(<"$1")
 EOF
 "       )
-#@@end_raw
     ) | sed '/^[[:space:]]*#:.*$/d'
 }
 
-#@+node:jkuan.20140101001347.1723: *4* N7::local::files::scp
 #
 # This is an alternative implementation of N7::local::files::cp() that uses scp
 # instead. It first scp the source file to a temporary file and then move it over
@@ -1180,7 +1130,6 @@ N7::local::files::scp() {
     [ "$N7_EHOSTS" = "$hosts" ]
     return $?
 }
-#@+node:jkuan.20140101001347.1724: *4* N7::local::tasks::get_stdout
 #
 # Output the stdout of the task with <task_idx> from <hostname>
 #
@@ -1197,7 +1146,6 @@ N7::local::tasks::get_stdout() {
       } 
     }' "$(N7::ssh_out_file $1)"
 }
-#@+node:jkuan.20140101001347.1725: *4* N7::local::tasks::get_stderr
 #
 # Output the stderr of the task with <task_idx> from <hostname>
 #
@@ -1205,9 +1153,7 @@ eval "$(declare -f N7::local::tasks::get_stdout \
          | sed -e 's/stdout/stderr/
                    s/_out_/_err_/'
        )"
-#@-others
 
-#@-<< local built-ins >>
 
 # This remote task defines N7's remote built-in functions.
 # It is run here so that those functions will also be available locally as well.
@@ -1282,4 +1228,3 @@ declare -r N7_TASKS
 N7::log "Run id=$N7_RUN_ID -- N7_DIR=$(N7::q "$N7_DIR") N7_EOT=$N7_EOT"
 N7::run_tasks_on_hosts "${N7_TASKS[*]}" "${N7_HOSTS[*]}"
 
-#@-leo
