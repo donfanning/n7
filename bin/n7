@@ -1090,6 +1090,7 @@ N7::local::files::cp() {
     return $?
 }
 #@+node:jkuan.20140101001347.1722: *4* N7::local::files::bash_tpl
+# N7::local::files::bash_tpl <bash_template_file_path>
 #
 # Print the contents of a local file to stdout.
 # The file content is subject to parameter expansions and process substitutions.
@@ -1106,6 +1107,11 @@ N7::local::files::cp() {
 #    Sleeping...
 #    #: $(sleep 2)
 #    Slept for $(($(date +%s) - time_start)) seconds.
+#
+# Note that time_start must not have been set in order for it to be
+# set, and once it's set, it cannot be unset or re-assigned. So, rather
+# this trick is more like "binding" a var name to a value than setting
+# a variable to a value.
 #
 N7::local::files::bash_tpl() {
     (
