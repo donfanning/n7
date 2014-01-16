@@ -6,6 +6,9 @@
 #set -x
 
 set -e
+#BASHDB_INSTALL=./bashdb-4.2-0.8
+#source ${BASHDB_INSTALL}/bashdb-trace -L $BASHDB_INSTALL
+#_Dbg_debugger
 
 declare -rA N7_LOG_LEVELS=([DEBUG]=-1 [INFO]=0 [WARNING]=1 [ERROR]=2 [FATAL]=3 [QUIET]=99)
 declare -i N7_VERBOSE=${N7_LOG_LEVELS[INFO]}
@@ -17,7 +20,14 @@ N7::log() {
         printf "%(%Y-%m-%dT%T%z)T|N7|$USER|$level|$1\n" -1
     fi
 }
-N7::die() { N7::log "$1" ${2:-ERROR} >&2; exit 1; }
+N7::die() {
+    N7::log "$1" ${2:-ERROR} >&2
+    if [ "$N7_VERBOSE" -ge ${N7_LOG_LEVELS[DEBUG]} ]; then
+        N7::log "Stack trace: ----------" DEBUG
+        local i=0; while caller $((i++)); do :; done
+    fi
+    exit 1
+}
 N7::usage() {
   echo "$(echo "\
     Usage: $(basename "$0") [options] [arg1 arg2 ...]
@@ -29,8 +39,9 @@ N7::usage() {
     Options:
       -h          Show this help. 
 
-      -m HOSTS    A list of comma separated hosts. Hosts will be read from
-                  STDIN(one host per line) if this option is not specified.
+      -m HOSTS    A list of comma separated hosts. If - is a member of HOSTS then
+                  hosts will also be read from STDIN(space, tab, or newline separated),
+                  and merged with HOSTS.
 
       -s FILE     Source and execute tasks in FILE after running the commands
                   specified on the command line.
@@ -122,13 +133,11 @@ N7::ssh_host_from_out_file() { echo $(basename "${1%.out}"); }
 N7::send_cmd() { printf "%s\n" "$1" >"$(N7::ssh_read_pipe ${2:?'Empty host!'})"; }
 
 N7::send_eot_line() {
-    local changed_f=$(N7::remote::tasks::change_file)
-
     # the line is: <eot_hash> <hostname> <task_index|-1> <exit_status|$?> <changed|->
     local line="$N7_EOT $1 ${N7_TASK_IDX:--1} ${2:-\$N7_RC} \
-               \$([ -e $(N7::q "$changed_f") ] && echo changed || echo -)"
+               \$([ -e \"\$(N7::remote::tasks::change_file)\" ] && echo changed || echo -)"
 
-    N7::send_cmd "N7_RC=\$?; echo ; echo $line; echo >&2; echo $line >&2" ${1:?'Empty host!'}
+    N7::send_cmd "N7_RC=\$?; (echo; echo $line) | tee /dev/stderr" ${1:?'Empty host!'}
     #
     # NOTE: we always output a newline before sending the EOT line so
     #       that the EOT line will always be on its own line.
@@ -413,8 +422,8 @@ N7::show_task_outputs() {
             # because bash always remove trailing newlines from a command
             # substitution.
         else
-            local rc=$(grep -an "^$N7_EOT $host $task_idx" "$out_file" | tail -n1 | cut -d' ' -f4)
-            N7::log "$host rc=$rc"
+            local rc_change=$(grep -a "^$N7_EOT $host $task_idx" "$out_file" | tail -n1 | cut -d' ' -f4,5)
+            N7::log "$host rc=${rc_change% *} state=${rc_change#* }"
         fi
     done
 }
@@ -471,6 +480,8 @@ N7::run_tasks() {
             # We also send an EOT line to each remote host at the end of a local task.
             # This is to make extracting stdout or stderr of a remote task easier.
             for host in $N7_EHOSTS; do N7::send_eot_line $host $rc; done
+
+            N7::show_task_outputs $N7_TASK_IDX $N7_EHOSTS
 
             continue
         fi
@@ -590,18 +601,24 @@ N7::run_pre_post_task_function() {
         for nv in "$@"; do
             [[ $nv =~ .+= ]] && params[${nv%%=*}]=${nv#*=}
         done
-        ${sudo:+$(N7::get_sudo "$sudo")} /bin/bash -s -- <<EOF
+        local changed
+        changed=$(${sudo:+$(N7::get_sudo "$sudo")} /bin/bash -s -- <<EOF
             owner=$(N7::q "${params[owner]}")
             group=$(N7::q "${params[group]}")
             mode=$(N7::q "${params[mode]}")
             mode=\${mode:-0\$(printf %o \$((0666 - \$(umask))))}
-            rt=0
-            read u g m < <(stat -c "%U %G %a" $path)
-            if [[ \$owner ]]; then [[ \$u == \$owner ]] || { chown \$owner $path; rt=\$((\$? | rt)); }; fi
-            if [[ \$group ]]; then [[ \$g == \$group ]] || { chgrp \$group $path; rt=\$((\$? | rt)); }; fi
-            if [[ \$mode  ]]; then [[ \$m == \$mode  ]] || { chmod \$mode  $path; rt=\$((\$? | rt)); }; fi
+            if [[ \${#mode} = 3 ]]; then mode=0\$mode; fi
+            rt=0; chgd=0
+            read u g m < <(stat -c "%U %G %a" $path); if [[ \${#m} = 3 ]]; then m=0\$m; fi
+            if [[ \$owner ]]; then [[ \$u == \$owner ]] || { chown \$owner $path && chgd=1; rt=\$((\$? | rt)); }; fi
+            if [[ \$group ]]; then [[ \$g == \$group ]] || { chgrp \$group $path && chgd=1; rt=\$((\$? | rt)); }; fi
+            if [[ \$mode  ]]; then [[ \$m == \$mode  ]] || { chmod \$mode  $path && chgd=1; rt=\$((\$? | rt)); }; fi
+            echo \$chgd
             exit \$rt
 EOF
+        )
+        local rc=$?; if [ "$changed" = 1 ]; then N7::remote::tasks::touch_change; fi
+        return $rc
     }
     N7::remote::tasks::change_file() {
         local task_idx=${1:-$N7_TASK_IDX}
@@ -615,18 +632,33 @@ EOF
         local change_file=$(N7::remote::tasks::change_file)
         [ -e "$change_file" ] || touch "$change_file"
     }
+    N7::remote::tasks::reset_change() {
+        rm -f "$(N7::remote::tasks::change_file)"
+    }
     N7::remote::tasks::changed() {
         [ -e "$(N7::remote::tasks::change_file $1)" ]
     }
+    # N7::remote::ansible::check_status
+    #
+    # Check the exit status of the last Ansible module run.
+    # Return 1 if it the run failed; return 0 otherwise.
+    #
     N7::remote::ansible::check_status() {
+        local changed
+        changed=$(
      python -c '
 import sys, json
 #FIXME: handle single line name=value pairs
 with open(sys.argv[1]) as f:
     data = json.load(f)
+if data.get("changed"):
+    print 1
 if "failed" in data:
     sys.exit(1)
-'    "$N7_ANSIBLE_OUT"
+'    "$N7_ANSIBLE_OUT")
+        local rc=$?
+        if [ "$changed" = 1 ]; then N7::remote::tasks::touch_change; fi
+        return $rc
     }
 
 }
@@ -635,11 +667,13 @@ if [ "$N7_SCRIPT" ]; then
     N7_SCRIPT_ARGS=("$@")
 fi
 
-# Read from stdin a list of hostnames, one per line, to ssh into.
-if [ ! "$N7_HOSTS" ]; then N7_HOSTS=$(</dev/stdin); fi
+if [[ " $N7_HOSTS " =~ " - " ]]; then
+    # Read from stdin a list of hostnames(space, tab, or newline separated)
+    N7_HOSTS="$N7_HOSTS $(</dev/stdin)"
+fi
 
 # De-duplicate the hostnames
-N7_HOSTS=$(echo $(echo $N7_HOSTS | tr ' ' '\n' | sort | uniq))
+N7_HOSTS=$(echo $(echo $N7_HOSTS | tr ' \t' '\n' | sort | uniq | tr -d -))
 declare -r N7_HOSTS
 #FIXME: should use host:port combination rather than just host
 
@@ -858,12 +892,14 @@ N7::local::ansible::run_mod() {
         N7::local::commands::remote "
             ${sudo:+$(N7::get_sudo "$sudo")} $tmpf | tee \$N7_ANSIBLE_OUT
             rm -f $tmpf
+            N7::remote::tasks::reset_change
             N7::remote::ansible::check_status
         "
     else
         N7::local::commands::remote "
             ${sudo:+$(N7::get_sudo "$sudo")} $tmpf <<<$(N7::q $*) | tee \$N7_ANSIBLE_OUT
             rm -f $tmpf
+            N7::remote::tasks::reset_change
             N7::remote::ansible::check_status
         "
     fi
@@ -973,7 +1009,7 @@ N7::local::commands::send_env() {
 # you should not specify the -m option.
 #
 N7::local::commands::n7() {
-    echo $N7_EHOSTS | N7_EHOSTS_FILE=$N7_EHOSTS_FILE "$0" "$@"
+    echo $N7_EHOSTS | N7_EHOSTS_FILE=$N7_EHOSTS_FILE "$0" -m - "$@"
 }
 # N7::local::files::cp <local_path> <remote_path> [options]
 #
@@ -1011,29 +1047,45 @@ N7::local::files::cp() {
     local nv; for nv in "$@"; do
         [[ $nv =~ .+= ]] && params[${nv%%=*}]=${nv#*=}
     done
-
-    local _sudo=${sudo:+$(N7::get_sudo "$sudo")}
-    local host hosts=$(N7::ssh_ehosts)
-
     local tplcmd=${params[tplcmd]}
-    local encoded
+    local _sudo=${sudo:+$(N7::get_sudo "$sudo")}
+
+    local token=$(openssl rand -hex 8)
+    N7::local::commands::remote "echo $token \$($_sudo openssl md5 -r $(N7::q "$dest") 2>/dev/null | cut -d' ' -f1)"
+
+    local host hosts=$(N7::ssh_ehosts)
+    local lmd5 rmd5 encoded content
+
     if [ "$tplcmd" ]; then
         for host in $hosts; do
-            encoded=$(base64 <(N7_HOST=$host $tplcmd "$src")) || return $?
-            N7::send_cmd "echo \"$encoded\" | base64 --decode |
-            (  $_sudo tee $dest >/dev/null &&
-                    sudo="$sudo" N7::remote::files::file $dest $(N7::qm "$@")
-            )" $host
-            N7::send_eot_line $host '$(( $(echo ${PIPESTATUS[*]} | tr " " \|) ))'
+            content=$(N7_HOST=$host $tplcmd "$src") || return $?
+            lmd5=$(openssl md5 -r <<<"$content" | cut -d' ' -f1)
+            rmd5=$(N7::local::tasks::get_stdout $host $N7_TASK_IDX $token); rmd5=${rmd5#* }
+
+            # only copy the file if their md5 sums differ
+            if [ "$rmd5" != "$lmd5" ]; then
+                encoded=$(base64 <<<"$content") || return $?
+                N7::send_cmd "unset N7_RC; echo \"$encoded\" | base64 --decode |
+                    $_sudo tee $dest >/dev/null && N7::remote::tasks::touch_change; N7_RC=\$?" $host
+            fi
+            N7::send_cmd "sudo=$(N7::q "$sudo") N7::remote::files::file $dest $(N7::qm "$@")" $host
+            N7::send_eot_line $host '$(( N7_RC | $? ))'
         done
     else
-        encoded=$(base64 <"$src") || return $?
+        content=$(<"$src") || return $?
+        lmd5=$(openssl md5 -r <<<"$content" | cut -d' ' -f1)
+        encoded=$(base64 <<<"$content") || return $?
+
         for host in $hosts; do
-            N7::send_cmd "echo \"$encoded\" | base64 --decode |
-            (  $_sudo tee $dest >/dev/null &&
-                    sudo="$sudo" N7::remote::files::file $dest $(N7::qm "$@")
-            )" $host
-            N7::send_eot_line $host '$(( $(echo ${PIPESTATUS[*]} | tr " " \|) ))'
+            rmd5=$(N7::local::tasks::get_stdout $host $N7_TASK_IDX $token); rmd5=${rmd5#* }
+
+            # only copy the file if their md5 sums differ
+            if [ "$rmd5" != "$lmd5" ]; then
+                N7::send_cmd "unset N7_RC; echo \"$encoded\" | base64 --decode |
+                    $_sudo tee $dest >/dev/null && N7::remote::tasks::touch_change; N7_RC=\$?" $host
+            fi
+            N7::send_cmd "sudo=$(N7::q "$sudo") N7::remote::files::file $dest $(N7::qm "$@")" $host
+            N7::send_eot_line $host '$(( N7_RC | $? ))'
         done
     fi
 
@@ -1130,15 +1182,18 @@ N7::local::files::scp() {
     [ "$N7_EHOSTS" = "$hosts" ]
     return $?
 }
+# N7::local::tasks::get_stdout <hostname> <task_index> [pattern]
 #
-# Output the stdout of the task with <task_idx> from <hostname>
+# Output the stdout of the task with <task_idx> from <hostname> that
+# matches the optional regex pattern.
 #
 N7::local::tasks::get_stdout() {
     [ "$2" -ge 0 ] &&
     awk 'BEGIN { i = 0 }
-    { if ($0 !~ "^'$N7_EOT'")
-        lines[i++] = $0
-      else {
+    { if ($0 !~ "^'$N7_EOT'") {
+        if ($0 ~ /'${3:-.}'/)
+          lines[i++] = $0
+      } else {
         if ($3 == "'$2'")
           for (e=0; e < i; e++)
             print lines[e];

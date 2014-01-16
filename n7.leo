@@ -17,13 +17,13 @@
 <v t="jkuan.20140107194142.1911"><vh>@bool scripting-at-script-nodes = true</vh></v>
 </v>
 <v t="jkuan.20140107194142.1912"><vh>@script</vh></v>
-<v t="jkuan.20140102142439.1727"><vh>TODOs</vh>
+<v t="jkuan.20140102142439.1727" a="E"><vh>TODOs</vh>
 <v t="jkuan.20140107111208.1901"><vh>ansible module integration</vh></v>
 <v t="jkuan.20140107111208.1903"><vh>show colorized output</vh></v>
 <v t="jkuan.20140107111208.1902"><vh>show also stderr for tasks with non-zero exit status</vh></v>
 </v>
 <v t="jkuan.20140115093336.1919" a="E"><vh>N7 built-in functions</vh>
-<v t="jkuan.20140101001347.1715"><vh>&lt;&lt; local built-ins &gt;&gt;</vh>
+<v t="jkuan.20140101001347.1715" a="E"><vh>&lt;&lt; local built-ins &gt;&gt;</vh>
 <v t="jkuan.20140115093336.1920" a="E"><vh>Ansible adapters</vh>
 <v t="jkuan.20140109170044.1915"><vh>N7::local::ansible::replace_mod</vh>
 <v t="jkuan.20140109170044.1916"><vh>&lt;&lt; ansible module replacer &gt;&gt;</vh></v>
@@ -42,10 +42,11 @@
 <v t="jkuan.20140101001347.1724"><vh>N7::local::tasks::get_stdout</vh></v>
 <v t="jkuan.20140101001347.1725"><vh>N7::local::tasks::get_stderr</vh></v>
 </v>
-<v t="jkuan.20140101001347.1713"><vh>&lt;&lt;remote built-ins&gt;&gt;</vh>
+<v t="jkuan.20140101001347.1713" a="E"><vh>&lt;&lt;remote built-ins&gt;&gt;</vh>
 <v t="jkuan.20140101001347.1726"><vh>N7::remote::files::file</vh></v>
 <v t="jkuan.20140101001347.1727"><vh>N7::remote::tasks::change_file</vh></v>
 <v t="jkuan.20140101001347.1728"><vh>N7::remote::tasks::touch_change</vh></v>
+<v t="jkuan.20140115093336.1921"><vh>N7::remote::tasks::reset_change</vh></v>
 <v t="jkuan.20140101001347.1729"><vh>N7::remote::tasks::changed</vh></v>
 <v t="jkuan.20140109170044.1919"><vh>N7::remote::ansible::check_status</vh></v>
 </v>
@@ -58,7 +59,7 @@
 <v t="jkuan.20140107111208.1904"><vh>@file test-n7-cmdline</vh></v>
 </v>
 <v t="jkuan.20140101001347.1707" a="E"
-expanded="jkuan.20140105132438.2228,jkuan.20140115093336.1920,"><vh>@shadow bin/n7</vh></v>
+expanded="jkuan.20140105132438.2228,jkuan.20140101001347.1713,jkuan.20140101001347.1715,jkuan.20140115093336.1920,"><vh>@shadow bin/n7</vh></v>
 </v>
 </vnodes>
 <tnodes>
@@ -184,7 +185,7 @@ N7::local::commands::send_env() {
 # you should not specify the -m option.
 #
 N7::local::commands::n7() {
-    echo $N7_EHOSTS | N7_EHOSTS_FILE=$N7_EHOSTS_FILE "$0" "$@"
+    echo $N7_EHOSTS | N7_EHOSTS_FILE=$N7_EHOSTS_FILE "$0" -m - "$@"
 }
 </t>
 <t tx="jkuan.20140101001347.1721"># N7::local::files::cp &lt;local_path&gt; &lt;remote_path&gt; [options]
@@ -223,29 +224,45 @@ N7::local::files::cp() {
     local nv; for nv in "$@"; do
         [[ $nv =~ .+= ]] &amp;&amp; params[${nv%%=*}]=${nv#*=}
     done
-
-    local _sudo=${sudo:+$(N7::get_sudo "$sudo")}
-    local host hosts=$(N7::ssh_ehosts)
-
     local tplcmd=${params[tplcmd]}
-    local encoded
+    local _sudo=${sudo:+$(N7::get_sudo "$sudo")}
+
+    local token=$(openssl rand -hex 8)
+    N7::local::commands::remote "echo $token \$($_sudo openssl md5 -r $(N7::q "$dest") 2&gt;/dev/null | cut -d' ' -f1)"
+
+    local host hosts=$(N7::ssh_ehosts)
+    local lmd5 rmd5 encoded content
+
     if [ "$tplcmd" ]; then
         for host in $hosts; do
-            encoded=$(base64 &lt;(N7_HOST=$host $tplcmd "$src")) || return $?
-            N7::send_cmd "echo \"$encoded\" | base64 --decode |
-            (  $_sudo tee $dest &gt;/dev/null &amp;&amp;
-                    sudo="$sudo" N7::remote::files::file $dest $(N7::qm "$@")
-            )" $host
-            N7::send_eot_line $host '$(( $(echo ${PIPESTATUS[*]} | tr " " \|) ))'
+            content=$(N7_HOST=$host $tplcmd "$src") || return $?
+            lmd5=$(openssl md5 -r &lt;&lt;&lt;"$content" | cut -d' ' -f1)
+            rmd5=$(N7::local::tasks::get_stdout $host $N7_TASK_IDX $token); rmd5=${rmd5#* }
+
+            # only copy the file if their md5 sums differ
+            if [ "$rmd5" != "$lmd5" ]; then
+                encoded=$(base64 &lt;&lt;&lt;"$content") || return $?
+                N7::send_cmd "unset N7_RC; echo \"$encoded\" | base64 --decode |
+                    $_sudo tee $dest &gt;/dev/null &amp;&amp; N7::remote::tasks::touch_change; N7_RC=\$?" $host
+            fi
+            N7::send_cmd "sudo=$(N7::q "$sudo") N7::remote::files::file $dest $(N7::qm "$@")" $host
+            N7::send_eot_line $host '$(( N7_RC | $? ))'
         done
     else
-        encoded=$(base64 &lt;"$src") || return $?
+        content=$(&lt;"$src") || return $?
+        lmd5=$(openssl md5 -r &lt;&lt;&lt;"$content" | cut -d' ' -f1)
+        encoded=$(base64 &lt;&lt;&lt;"$content") || return $?
+
         for host in $hosts; do
-            N7::send_cmd "echo \"$encoded\" | base64 --decode |
-            (  $_sudo tee $dest &gt;/dev/null &amp;&amp;
-                    sudo="$sudo" N7::remote::files::file $dest $(N7::qm "$@")
-            )" $host
-            N7::send_eot_line $host '$(( $(echo ${PIPESTATUS[*]} | tr " " \|) ))'
+            rmd5=$(N7::local::tasks::get_stdout $host $N7_TASK_IDX $token); rmd5=${rmd5#* }
+
+            # only copy the file if their md5 sums differ
+            if [ "$rmd5" != "$lmd5" ]; then
+                N7::send_cmd "unset N7_RC; echo \"$encoded\" | base64 --decode |
+                    $_sudo tee $dest &gt;/dev/null &amp;&amp; N7::remote::tasks::touch_change; N7_RC=\$?" $host
+            fi
+            N7::send_cmd "sudo=$(N7::q "$sudo") N7::remote::files::file $dest $(N7::qm "$@")" $host
+            N7::send_eot_line $host '$(( N7_RC | $? ))'
         done
     fi
 
@@ -347,15 +364,18 @@ N7::local::files::scp() {
     return $?
 }
 </t>
-<t tx="jkuan.20140101001347.1724">#
-# Output the stdout of the task with &lt;task_idx&gt; from &lt;hostname&gt;
+<t tx="jkuan.20140101001347.1724"># N7::local::tasks::get_stdout &lt;hostname&gt; &lt;task_index&gt; [pattern]
+#
+# Output the stdout of the task with &lt;task_idx&gt; from &lt;hostname&gt; that
+# matches the optional regex pattern.
 #
 N7::local::tasks::get_stdout() {
     [ "$2" -ge 0 ] &amp;&amp;
     awk 'BEGIN { i = 0 }
-    { if ($0 !~ "^'$N7_EOT'")
-        lines[i++] = $0
-      else {
+    { if ($0 !~ "^'$N7_EOT'") {
+        if ($0 ~ /'${3:-.}'/)
+          lines[i++] = $0
+      } else {
         if ($3 == "'$2'")
           for (e=0; e &lt; i; e++)
             print lines[e];
@@ -393,20 +413,26 @@ N7::remote::files::file() {
     for nv in "$@"; do
         [[ $nv =~ .+= ]] &amp;&amp; params[${nv%%=*}]=${nv#*=}
     done
-    ${sudo:+$(N7::get_sudo "$sudo")} /bin/bash -s -- &lt;&lt;EOF
+    local changed
+    changed=$(${sudo:+$(N7::get_sudo "$sudo")} /bin/bash -s -- &lt;&lt;EOF
         owner=$(N7::q "${params[owner]}")
         group=$(N7::q "${params[group]}")
         mode=$(N7::q "${params[mode]}")
         mode=\${mode:-0\$(printf %o \$((0666 - \$(umask))))}
-        rt=0
-        read u g m &lt; &lt;(stat -c "%U %G %a" $path)
-        if [[ \$owner ]]; then [[ \$u == \$owner ]] || { chown \$owner $path; rt=\$((\$? | rt)); }; fi
-        if [[ \$group ]]; then [[ \$g == \$group ]] || { chgrp \$group $path; rt=\$((\$? | rt)); }; fi
-        if [[ \$mode  ]]; then [[ \$m == \$mode  ]] || { chmod \$mode  $path; rt=\$((\$? | rt)); }; fi
+        if [[ \${#mode} = 3 ]]; then mode=0\$mode; fi
+        rt=0; chgd=0
+        read u g m &lt; &lt;(stat -c "%U %G %a" $path); if [[ \${#m} = 3 ]]; then m=0\$m; fi
+        if [[ \$owner ]]; then [[ \$u == \$owner ]] || { chown \$owner $path &amp;&amp; chgd=1; rt=\$((\$? | rt)); }; fi
+        if [[ \$group ]]; then [[ \$g == \$group ]] || { chgrp \$group $path &amp;&amp; chgd=1; rt=\$((\$? | rt)); }; fi
+        if [[ \$mode  ]]; then [[ \$m == \$mode  ]] || { chmod \$mode  $path &amp;&amp; chgd=1; rt=\$((\$? | rt)); }; fi
+        echo \$chgd
         exit \$rt
 @raw
 EOF
 @end_raw
+    )
+    local rc=$?; if [ "$changed" = 1 ]; then N7::remote::tasks::touch_change; fi
+    return $rc
 }
 </t>
 <t tx="jkuan.20140101001347.1727">N7::remote::tasks::change_file() {
@@ -548,31 +574,50 @@ N7::local::ansible::run_mod() {
         N7::local::commands::remote "
             ${sudo:+$(N7::get_sudo "$sudo")} $tmpf | tee \$N7_ANSIBLE_OUT
             rm -f $tmpf
+            N7::remote::tasks::reset_change
             N7::remote::ansible::check_status
         "
     else
         N7::local::commands::remote "
             ${sudo:+$(N7::get_sudo "$sudo")} $tmpf &lt;&lt;&lt;$(N7::q $*) | tee \$N7_ANSIBLE_OUT
             rm -f $tmpf
+            N7::remote::tasks::reset_change
             N7::remote::ansible::check_status
         "
     fi
 }
 </t>
-<t tx="jkuan.20140109170044.1919">N7::remote::ansible::check_status() {
+<t tx="jkuan.20140109170044.1919"># N7::remote::ansible::check_status
+#
+# Check the exit status of the last Ansible module run.
+# Return 1 if it the run failed; return 0 otherwise.
+#
+N7::remote::ansible::check_status() {
+    local changed
+    changed=$(
 @raw
      python -c '
 import sys, json
 #FIXME: handle single line name=value pairs
 with open(sys.argv[1]) as f:
     data = json.load(f)
+if data.get("changed"):
+    print 1
 if "failed" in data:
     sys.exit(1)
-'    "$N7_ANSIBLE_OUT"
+'    "$N7_ANSIBLE_OUT")
 @end_raw
+    local rc=$?
+    if [ "$changed" = 1 ]; then N7::remote::tasks::touch_change; fi
+    return $rc
 }
 </t>
-<t tx="jkuan.20140115093336.1919"></t>
+<t tx="jkuan.20140115093336.1919">@language shell
+</t>
 <t tx="jkuan.20140115093336.1920">@others</t>
+<t tx="jkuan.20140115093336.1921">N7::remote::tasks::reset_change() {
+    rm -f "$(N7::remote::tasks::change_file)"
+}
+</t>
 </tnodes>
 </leo_file>

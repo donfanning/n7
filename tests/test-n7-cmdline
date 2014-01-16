@@ -17,7 +17,7 @@ nlines=$(n7 -m $(tr ' ' , <<<"$HOSTS $HOSTS") -v QUIET "echo $OUTPUT_PREFIX test
 
 
 # Test task timeout
-echo $HOSTS | n7 -o -s <(cat <<EOF
+echo $HOSTS | n7 -m - -o -s <(cat <<EOF
     .test_timeout() {
         : REMOTE=1
         : TIMEOUT=2
@@ -29,7 +29,7 @@ EOF
 
 
 # Test task status
-echo $HOSTS | n7 -o -s <(cat <<EOF
+echo $HOSTS | n7 -m - -o -s <(cat <<EOF
     .task_0() { : REMOTE=1; echo "this is task 0; next task will fail"; }
     .task_1() { : REMOTE=1; return 1; }
     .task_2() { : REMOTE=1; echo "$OUTPUT_PREFIX this task won't be executed."; }
@@ -39,7 +39,7 @@ EOF
 
 
 # Test task ignore status
-echo $HOSTS | n7 -o -s <(cat <<EOF
+echo $HOSTS | n7 -m - -o -s <(cat <<EOF
     .task_0() { : REMOTE=1; echo "this is task 0; next task will fail"; }
     .task_1() { : REMOTE=1; : IGNORE_STATUS=1; return 1; }
     .task_2() { : REMOTE=1; echo "$OUTPUT_PREFIX this task will still be executed."; }

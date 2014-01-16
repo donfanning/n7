@@ -2,7 +2,7 @@
 #@+leo-ver=5-thin
 #@+node:jkuan.20140106102002.1899: * @file basic.n7
 #@@first
-set -e
+# set -e
 
 # Some basic tests
 
@@ -127,9 +127,20 @@ CAPTURED=
 }
 
 
+.test_cp_tpl_unchanged() {
+    no_subshell=1 N7::local::commands::remote "mtime=\$(stat -c %Y /tmp/cp_tpl_$PID)"
+    N7::local::files::cp <(echo hello \$PID) /tmp/cp_tpl_$PID tplcmd=N7::local::files::bash_tpl
+}
+.check_cp_tpl_unchanged() {
+    : REMOTE=1
+    assert_eq_str $mtime $(stat -c %Y /tmp/cp_tpl_$MY_PID)
+}
+
+
 .test_n7_sub_process() {
     : LOCAL=1
     N7::local::commands::n7 'touch /tmp/nnnn'
 }
+
 
 #@-leo
