@@ -3,12 +3,16 @@
 # N7 - Ad Hoc Task Automation and Orchestration in Bash.
 #
 
-#set -x
-
 set -e
+# Uncomment and adjust the following lines to activate the bash debugger.
+# And you need to uncomment the set -e line above as well.
+# See http://bashdb.sourceforge.net/
+#
 #BASHDB_INSTALL=./bashdb-4.2-0.8
 #source ${BASHDB_INSTALL}/bashdb-trace -L $BASHDB_INSTALL
-#_Dbg_debugger
+#
+#_Dbg_debugger  # move this line to where you want to the debugger to take over.
+#
 
 declare -rA N7_LOG_LEVELS=([DEBUG]=-1 [INFO]=0 [WARNING]=1 [ERROR]=2 [FATAL]=3 [QUIET]=99)
 declare -i N7_VERBOSE=${N7_LOG_LEVELS[INFO]}
@@ -354,9 +358,11 @@ N7::ssh_connect() {
         if [ -e "$ssh_pipe" ]; then
             continue
         fi
-        ssh_out=$(N7::ssh_out_file $host)
-        ssh_err=$(N7::ssh_err_file $host)
-        mkfifo "$ssh_pipe" || N7::die "Failed making named pipes for ssh!"
+        ssh_out=$(N7::ssh_out_file $host) && chmod 0600 "$ssh_out"
+        ssh_err=$(N7::ssh_err_file $host) && chmod 0600 "$ssh_err"
+
+        mkfifo -m600 "$ssh_pipe" || N7::die "Failed making named pipes for ssh!"
+
         set -m  # temporarily enable job control to create the following
         (       # subshell in its own process group.
           $N7_SSH_CMD $host 'exec -l /bin/bash' <"$ssh_pipe" >"$ssh_out" 2>"$ssh_err" &
@@ -481,7 +487,8 @@ N7::run_tasks() {
             # This is to make extracting stdout or stderr of a remote task easier.
             for host in $N7_EHOSTS; do N7::send_eot_line $host $rc; done
 
-            N7::show_task_outputs $N7_TASK_IDX $N7_EHOSTS
+            #FIXME
+            #N7::show_task_outputs $N7_TASK_IDX $N7_EHOSTS
 
             continue
         fi
@@ -673,7 +680,7 @@ if [[ " $N7_HOSTS " =~ " - " ]]; then
 fi
 
 # De-duplicate the hostnames
-N7_HOSTS=$(echo $(echo $N7_HOSTS | tr ' \t' '\n' | sort | uniq | tr -d -))
+N7_HOSTS=$(echo $(echo $N7_HOSTS | tr ' \t' '\n' | sort | uniq | grep -v -- ^-\$))
 declare -r N7_HOSTS
 #FIXME: should use host:port combination rather than just host
 
