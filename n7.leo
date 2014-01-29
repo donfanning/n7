@@ -59,7 +59,7 @@
 <v t="jkuan.20140107111208.1904"><vh>@file test-n7-cmdline</vh></v>
 </v>
 <v t="jkuan.20140101001347.1707" a="E"
-expanded="jkuan.20140105132438.2228,jkuan.20140101001347.1713,jkuan.20140101001347.1715,jkuan.20140115093336.1920,"><vh>@shadow bin/n7</vh></v>
+expanded="jkuan.20140105132438.2228,jkuan.20140101001347.1713,jkuan.20140101001347.1708,jkuan.20140101001347.1715,jkuan.20140115093336.1920,"><vh>@shadow bin/n7</vh></v>
 </v>
 </vnodes>
 <tnodes>

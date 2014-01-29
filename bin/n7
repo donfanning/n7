@@ -65,6 +65,10 @@ N7::usage() {
                   Local and command-line task outputs are always shown unless you
                   redirect them in the task.
 
+      -D          Do not redirect stderr to stdout for command line tasks.
+                  The default is to do an 'exec 2>&1' at the beginning of each
+                  command line task.
+
       -k          Keep the run directory after execution. The run directory, which
                   is unique to each n7 invocation, stores the runtime files such as
                   stdout and stderr files from each remote host, etc.
@@ -74,12 +78,13 @@ N7::usage() {
 " | sed -e 's/    //')"
 }
 
-while getopts ':hs:m:v:okp:-' option; do
+while getopts ':hs:m:v:oDkp:-' option; do
     case $option in
         s) N7_SCRIPT=$OPTARG ;;
         m) N7_HOSTS=$(tr , ' ' <<<"$OPTARG") ;;
         v) N7_VERBOSE=${N7_LOG_LEVELS[$OPTARG]?:"Invalid log level: $OPTARG"} ;;
         o) N7_TASK_SHOW_STDOUT=1 ;;
+        D) N7_CLI_TASK_NO_REDIRECTION=1 ;;
         k) N7_KEEP_RUN_DIR=1 ;;
         p) declare -r N7_SSH_COUNT=$OPTARG 
            [ "$N7_SSH_COUNT" -gt 0 ] ||
@@ -352,7 +357,7 @@ N7::wait_for_task() {
 # recieve task outputs.
 #
 N7::ssh_connect() {
-    local host ssh_pipe ssh_out ssh_err fd
+    local host port ssh_pipe ssh_out ssh_err fd
     for host in $*; do
         ssh_pipe=$(N7::ssh_read_pipe $host)
         if [ -e "$ssh_pipe" ]; then
@@ -363,9 +368,11 @@ N7::ssh_connect() {
 
         mkfifo -m600 "$ssh_pipe" || N7::die "Failed making named pipes for ssh!"
 
+        port=${N7_HOST_PORTS[$host]#:}
+
         set -m  # temporarily enable job control to create the following
         (       # subshell in its own process group.
-          $N7_SSH_CMD $host 'exec -l /bin/bash' <"$ssh_pipe" >"$ssh_out" 2>"$ssh_err" &
+          $N7_SSH_CMD ${port:+-p$port} $host 'exec -l /bin/bash' <"$ssh_pipe" >"$ssh_out" 2>"$ssh_err" &
           ssh_pid=$!
           echo $ssh_pid >>"$N7_SSH_PIDs"
           wait $ssh_pid
@@ -670,10 +677,6 @@ if "failed" in data:
 
 }
 
-if [ "$N7_SCRIPT" ]; then
-    N7_SCRIPT_ARGS=("$@")
-fi
-
 if [[ " $N7_HOSTS " =~ " - " ]]; then
     # Read from stdin a list of hostnames(space, tab, or newline separated)
     N7_HOSTS="$N7_HOSTS $(</dev/stdin)"
@@ -681,15 +684,39 @@ fi
 
 # De-duplicate the hostnames
 N7_HOSTS=$(echo $(echo $N7_HOSTS | tr ' \t' '\n' | sort | uniq | grep -v -- ^-\$))
+
+# Make sure there's not a host with the same name but different ports.
+# That is, ahost ahost:1234 is consider an error, and so is ahost:1234 ahost:5678
+# In other words, we only allow one ssh connection per remote host.
+#
+declare -A N7_HOST_PORTS  # hostname -> :port
+for host in $N7_HOSTS; do
+    port=
+    if [[ $host == *:*:*:* ]]; then # assume IPv6 address
+        if [[ $host =~ \]: ]]; then
+            port=${host##*]:}
+            host=${host%]:$port}
+            host=${host#[}
+        fi
+    else
+        if [[ $host =~ : ]]; then
+            port=${host##*:}
+        fi
+        host=${host%:$port}
+    fi
+    if [ "${N7_HOST_PORTS[$host]}" ]; then
+        N7::die "Duplicate host entry($host) found in remote host list!"
+    fi
+    N7_HOST_PORTS[$host]=:$port
+done
+unset host port
+
+N7_HOSTS=${!N7_HOST_PORTS[*]}
 declare -r N7_HOSTS
-#FIXME: should use host:port combination rather than just host
 
-# The "effective" host list. It gets updated by `run_tasks()' while N7_HOSTS doesn't.
-N7_EHOSTS=
-
-# Task definitions are just bash functions defined in a script.
-# Any function named with a `.' prefix is a task.
-declare -r N7_SCRIPT
+if [ "$N7_SCRIPT" ]; then
+    N7_SCRIPT_ARGS=("$@")
+fi
 
 # Function name prefix for command-line tasks.
 declare -r N7_CLI_TASK_PREFIX=.N7::cli_task::
@@ -699,13 +726,24 @@ declare -r N7_CLI_TASK_PREFIX=.N7::cli_task::
 if [ ! "$N7_SCRIPT" ]; then
     i=0
     for cmd in "$@"; do
-        eval "${N7_CLI_TASK_PREFIX}$i() { : REMOTE=1
+        eval "${N7_CLI_TASK_PREFIX}$i() {
+            : REMOTE=1
+            if [ ! "$N7_CLI_TASK_NO_REDIRECTION" ]; then
+                exec 2>&1
+            fi
             $cmd
         }"
         let ++i
     done
     unset cmd i
 fi
+
+# The "effective" host list. It gets updated by `run_tasks()' while N7_HOSTS doesn't.
+N7_EHOSTS=
+
+# Task definitions are just bash functions defined in a script.
+# Any function named with a `.` prefix is a task.
+declare -r N7_SCRIPT
 
 # Task names in execution order.
 N7_TASKS=()
