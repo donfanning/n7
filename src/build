@@ -1,0 +1,30 @@
+#!/bin/bash
+
+# Process a file, expanding file include macros recursively.
+# A include macro is a line that begins(from column 1) with a #< followed by
+# the path of the file to be included. If a included path is not absolute, then
+# it is interpreted as being relative to the directory that contains the
+# including file.
+#
+# *IMPORTANT*: Anything after #< will also be eval'ed as trailing arguments to
+# printf "%q", so make sure you quote your path if you don't want it to be
+# expanded. Example:
+#
+# #< "$INCLUDE_DIR/lib/utils.sh"
+# 
+expand_includes() {
+    local file=$1 line include
+    while IFS= read -r line; do
+        if [[ $line =~ ^#\< ]]; then
+            include=$(eval printf "%q" "${line:2}")
+            if ! [[ ${include:0:1} = / ]]; then
+                include=$(dirname "$file")/$include
+            fi
+            expand_includes "$include"
+        else
+            printf "%s\n" "$line"
+        fi
+    done <"$file"
+}
+
+expand_includes "$1"

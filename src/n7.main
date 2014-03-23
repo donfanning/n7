@@ -1,0 +1,93 @@
+#!/bin/bash
+#
+# N7 - Ad Hoc Task Automation and Orchestration in Bash.
+#
+
+set -eE
+
+#< utils.sh         # eg, N7::log, N7::die, ..etc
+trap "set +x; N7::print_stack_trace" ERR
+
+#--- Process command line arguments or show usage --------------
+#< parse_opts.part
+#---------------------------------------------------------------
+
+
+#--- Initialize global variables used by many core functions ---
+#< globals.part
+#
+mkdir -p "$N7_DIR" "$N7_DIR/tmp" "$N7_RUNS_DIR" "$N7_RUN_DIR"
+#---------------------------------------------------------------
+
+
+
+#--- Define the core functions that make up n7 -----------------
+#< core.sh
+#
+trap 'N7::cleanup' ABRT ERR TERM QUIT INT EXIT HUP
+#---------------------------------------------------------------
+
+
+#--- Define built-in tasks to initialize environments and define
+#    built-in functions on remote hosts.
+#
+#< builtin_tasks.sh
+#
+#--- Define local-only built-in functions -----------------------
+#
+#< local_builtins.sh
+#
+# This remote task defines N7's remote built-in functions.
+# It is run here so that those functions will also be available
+# locally as well.
+.N7::define_remote_builtins
+#
+#----------------------------------------------------------------
+
+
+# Load user's .n7 script
+if [ "$N7_SCRIPT" ]; then
+    source "$N7_SCRIPT" "${N7_SCRIPT_ARGS[@]}" || N7::die "Failed loading $N7_SCRIPT!"
+fi
+
+# We've given the .n7 script the chance to mess with some of the globals,
+# now make them read-only.
+declare -r \
+    N7_EOT \
+    N7_SUDO \
+    N7_TASK_TIMEOUT \
+    N7_DEFAULT_TASK_TYPE \
+    N7_SSH_OPTS \
+    N7_SSH_CMD 
+
+N7::load_tasks
+
+# Run N7 built-in tasks first
+N7::run_tasks_on_hosts "${N7_BUILTIN_TASKS[*]}" "${N7_HOSTS[*]}" >>"$N7_INTERNAL_ERR_FILE" 2>&1 ||
+    N7::die "Failed initializing remote hosts!"
+
+# Unset the built-in tasks and prevent them from showing up in n7 outputs.
+N7::scope_do() {
+    local i host length=${#N7_BUILTIN_TASKS[*]}
+    for ((i=0; i < length; i++)); do
+        unset N7_TASK_OPTS_$i
+        unset N7_TASKS[$i]
+        #Note: However, the above won't affect the indexes of user-defined tasks.
+    done
+    unset -f ${N7_BUILTIN_TASKS[*]}
+    for host in ${N7_HOSTS[*]}; do
+        : > "$(N7::ssh_out_file $host)"
+        : > "$(N7::ssh_err_file $host)"
+        # ssh doesn't know that we just truncated the files. This results in
+        # null bytes at the beginning of the files. So, we write an EOT line
+        # with task id == -1 to make the output of task 0 starts on a newline,
+        # and to avoid the null bytes from appearing as task 0's output.
+        N7::send_eot_line $host -1 0
+    done
+}; N7::scope_do; unset -f N7::scope_do
+declare -r N7_TASKS
+
+# Run user's N7 tasks
+N7::log "Run id=$N7_RUN_ID -- N7_DIR=$(N7::q "$N7_DIR") N7_EOT=$N7_EOT"
+N7::run_tasks_on_hosts "${N7_TASKS[*]}" "${N7_HOSTS[*]}"
+

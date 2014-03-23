@@ -1,0 +1,74 @@
+#!/bin/bash
+
+N7::usage() {
+  echo "$(echo "\
+    Usage: $(basename "$0") [options] [arg1 arg2 ...]
+
+    Each argument, if provided, will be wrapped and run in a N7 *remote* task.
+    However, If the -s option is provided then each argument will be passed to
+    the N7 script as command line arguments.
+        
+    Options:
+      -h          Show this help. 
+
+      -m HOSTS    A list of comma separated hosts. If - is a member of HOSTS then
+                  hosts will also be read from STDIN(space, tab, or newline separated),
+                  and merged with HOSTS.
+
+      -s FILE     Source and execute the N7 tasks in FILE.
+
+      --          Mark the end of command-line options. The rest of command line
+                  arguments won't be parsed as options to n7. This might be
+                  useful for passing options specific to a n7 script.
+
+      -v LEVEL    Set the verbose level. Defaults to INFO.
+                  Levels available: $(
+                       for k in ${!N7_LOG_LEVELS[*]}; do
+                           echo ${N7_LOG_LEVELS[$k]} $k
+                       done | sort -n | cut -d' ' -f2 | xargs
+                  )
+
+      -o          Show task stdout at the end of a task from each host.
+                  Local and command-line task outputs are always shown unless you
+                  redirect them in the task.
+
+      -D          Do not redirect stderr to stdout for command line tasks.
+                  The default is to do an 'exec 2>&1' at the beginning of each
+                  command line task.
+
+      -k          Keep the run directory after execution. The run directory, which
+                  is unique to each n7 invocation, stores the runtime files such as
+                  stdout and stderr files from each remote host, etc.
+
+      -p COUNT    Limit the number of parallel SSH processes to COUNT at a time.
+
+" | sed -e 's/    //')"
+}
+
+while getopts ':hs:m:v:oDkp:-' option; do
+    case $option in
+        s) N7_SCRIPT=$OPTARG; declare -r N7_SCRIPT ;;
+        m) N7_HOSTS=$(tr , ' ' <<<"$OPTARG") ;;
+        v) N7_VERBOSE=${N7_LOG_LEVELS[$OPTARG]?:"Invalid log level: $OPTARG"} ;;
+        o) N7_TASK_SHOW_STDOUT=1 ;;
+        D) N7_CLI_TASK_NO_REDIRECTION=1 ;;
+        k) N7_KEEP_RUN_DIR=1 ;;
+        p) declare -r N7_SSH_COUNT=$OPTARG 
+           [ "$N7_SSH_COUNT" -gt 0 ] ||
+               N7::die "Invalid value($N7_SSH_COUNT) for the -p option!"
+            ;;
+        h) N7::usage; exit ;;
+        -) break ;;
+        :) N7::die "Missing option argument for -$OPTARG" ;;
+        \?) N7::die "Unknown option: -$OPTARG" ;;
+    esac
+done
+unset option
+shift $(($OPTIND - 1))
+
+if [[ " $N7_HOSTS " =~ " - " ]]; then
+    # Read from stdin a list of hostnames(space, tab, or newline separated)
+    N7_HOSTS="$N7_HOSTS $(</dev/stdin)"
+fi
+
+
