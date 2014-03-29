@@ -2,6 +2,9 @@
 #
 # N7 - Ad Hoc Task Automation and Orchestration in Bash.
 #
+# TODO:
+#   - Warn about no hosts specified
+#   - 
 
 set -eE
 
@@ -79,10 +82,11 @@ N7::scope_do() {
         : > "$(N7::ssh_out_file $host)"
         : > "$(N7::ssh_err_file $host)"
         # ssh doesn't know that we just truncated the files. This results in
-        # null bytes at the beginning of the files. So, we write an EOT line
-        # with task id == -1 to make the output of task 0 starts on a newline,
-        # and to avoid the null bytes from appearing as task 0's output.
-        N7::send_eot_line $host -1 0
+        # null bytes at the beginning of the files. So, we write an EOT line,
+        # with task index == the index of the last built-in task run, to make
+        # the output of task 0 starts on a newline, and to avoid the null bytes
+        # from appearing as the first user task's output.
+	N7::send_eot_line $host 0
     done
 }; N7::scope_do; unset -f N7::scope_do
 declare -r N7_TASKS

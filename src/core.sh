@@ -48,8 +48,10 @@ N7::ssh_host_from_out_file() { echo $(basename "${1%.out}"); }
 N7::send_cmd() { printf "%s\n" "$1" >"$(N7::ssh_read_pipe ${2:?'Empty host!'})"; }
 
 N7::send_eot_line() {
+    local last_builtin_task_idx=$((${#N7_BUILTIN_TASKS[*]} - 1))
+
     # the line is: <eot_hash> <hostname> <task_index|-1> <exit_status|$?> <changed|->
-    local line="$N7_EOT $1 ${N7_TASK_IDX:--1} ${2:-\$N7_RC} \
+    local line="$N7_EOT $1 ${N7_TASK_IDX:-$last_builtin_task_idx} ${2:-\$N7_RC} \
                \$([ -e \"\$(N7::remote::tasks::change_file)\" ] && echo changed || echo -)"
 
     N7::send_cmd "N7_RC=\$?; (echo; echo $line) | tee /dev/stderr" ${1:?'Empty host!'}
@@ -93,7 +95,8 @@ N7::load_tasks() {
 
     # Add command-line tasks
     N7_TASKS+=($(declare -f | grep "^\.N7::cli_task::" | cut -d' ' -f1 | sort -t: -nk5))
-    #FIXME: .N7::cli_task:: is a hard coded prefix that's also used in globals.part
+    #FIXME: .N7::cli_task:: is a hard coded prefix that's also used in globals.part and
+    #        show_task_outputs().
 
     shopt -s extdebug
     N7_TASKS+=($(
@@ -118,7 +121,7 @@ N7::load_tasks() {
     # Create the reverse, task name -> task index map.
     local task i=0
     for task in ${N7_TASKS[*]} ${N7_HANDLERS[*]}; do
-        N7_TASK_NAME_2_INDEX[task]=$((i++))
+        N7_TASK_NAME_2_INDEX[$task]=$((i++))
     done
 
     N7::load_task_opts ${N7_TASKS[*]} ${N7_HANDLERS[*]}
@@ -291,8 +294,8 @@ N7::ssh_connect() {
         if [ -e "$ssh_pipe" ]; then
             continue
         fi
-        ssh_out=$(N7::ssh_out_file $host) && chmod 0600 "$ssh_out"
-        ssh_err=$(N7::ssh_err_file $host) && chmod 0600 "$ssh_err"
+        ssh_out=$(N7::ssh_out_file $host) && touch "$ssh_out" && chmod 0600 "$ssh_out"
+        ssh_err=$(N7::ssh_err_file $host) && touch "$ssh_err" && chmod 0600 "$ssh_err"
 
         mkfifo -m600 "$ssh_pipe" || N7::die "Failed making named pipes for ssh!"
 
@@ -326,7 +329,7 @@ N7::ssh_connect() {
     done
 }
 
-# N7::show_task_outputs <task_idx>
+# N7::show_task_outputs <task_idx> <hosts>
 #
 # Print the stdout of the task specified by the task index if the task is a
 # command-line task or if the -o command-line option is set.
@@ -340,16 +343,19 @@ N7::ssh_connect() {
 N7::show_task_outputs() {
     local task_idx=$1; shift
     local task_name=${N7_TASKS[$task_idx]}
-    local last_task_idx=$((task_idx - 1 - ${#N7_BUILTIN_TASKS[*]}))
+    local last_task_idx=$((task_idx - 1))
 
-    [[ $N7_TASK_SHOW_STDOUT || ${task_name/#$N7_CLI_TASK_PREFIX} != $task_name  ]]
-    local show_output=$?
+    local show_output
+    if [[ $N7_TASK_SHOW_STDOUT ||
+          ${task_name/#.N7::cli_task::} != $task_name ]]; then
+        show_output=1
+    fi
 
     local host from_line out_file
     for host in $*; do
         out_file=$(N7::ssh_out_file $host)
 
-        if [ "$show_output" = 0 ]; then
+        if [ "$show_output" ]; then
             from_line=$(grep -an "^$N7_EOT $host $last_task_idx " "$out_file" |
                     tail -n1 | cut -d: -f1)
             let ++from_line
@@ -400,7 +406,7 @@ N7::run_tasks() {
 
     while [[ $# > 0 && $N7_EHOSTS ]]; do
         task=$1; shift
-        N7_TASK_IDX=${N7_TASK_NAME_2_INDEX[task]}
+        N7_TASK_IDX=${N7_TASK_NAME_2_INDEX[$task]}
 
         no_subshell=$(N7::get_task_opt $N7_TASK_IDX NO_SUBSHELL)
 
@@ -441,6 +447,9 @@ N7::run_tasks() {
             done
             N7_EHOSTS=$(N7::wait_for_task $N7_TASK_IDX $N7_EHOSTS)
         fi
+
+        #FIXME: this doesn't show failed task output because failed
+        #       hosts will have been removed from N7_EHOSTS
         N7::show_task_outputs $N7_TASK_IDX $N7_EHOSTS
     done
 }
@@ -469,19 +478,19 @@ N7::run_pre_task_function() {
 }
 
 
-#N7::run_tasks_on_hosts "tasks..." "hosts..." starting_task_index
+#N7::run_tasks_on_hosts "tasks..." "hosts..."
 #
 N7::run_tasks_on_hosts() {
-    local tasks=$1 hosts=$2 starting_idx=$3
+    local tasks=$1 hosts=$2
     if [ "$N7_SSH_COUNT" ]; then
         while read hosts; do
-            N7::run_tasks "$tasks" "${hosts}" $starting_idx
+            N7::run_tasks "$tasks" "${hosts}"
             if [ "$(N7::ssh_ehosts)" != "$hosts" ]; then
                 return $?
             fi
         done < <(tr ' ' '\n' <<<$hosts | paste -d' ' $(seq -f - ${N7_SSH_COUNT}))
     else
-        N7::run_tasks "$tasks" "$hosts" $starting_idx
+        N7::run_tasks "$tasks" "$hosts"
         [ "$(N7::ssh_ehosts)" = "$hosts" ]
     fi
 }
