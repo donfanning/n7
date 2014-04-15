@@ -5,7 +5,7 @@ declare -i N7_VERBOSE=${N7_LOG_LEVELS[INFO]}
 N7::log() {
     local level=${2:-"INFO"}; 
     local -i ilevel=${N7_LOG_LEVELS[$level]?:"Invalid log level: $level"}
-    if [ "$ilevel" -ge "$N7_VERBOSE" ]; then
+    if [[ $ilevel -ge $N7_VERBOSE ]]; then
         printf "%(%Y-%m-%dT%T%z)T|N7|$USER|$level|$1\n" -1
     fi
 }
@@ -19,6 +19,6 @@ N7::print_stack_trace() {
     echo "Failed command: -->$BASH_COMMANDS<--"
 }
 
-N7::is_num() { [ "$1" ] && printf "%.0f" "$1" >/dev/null 2>&1; }
-N7::is_int() { [ "$1" ] && printf "%d" "$1" >/dev/null 2>&1; }
+N7::is_num() { [[ $1 ]] && printf "%.0f" "$1" >/dev/null 2>&1; }
+N7::is_int() { [[ $1 ]] && printf "%d" "$1" >/dev/null 2>&1; }
 

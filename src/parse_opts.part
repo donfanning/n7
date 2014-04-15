@@ -54,7 +54,7 @@ while getopts ':hs:m:v:oDkp:-' option; do
         D) N7_CLI_TASK_NO_REDIRECTION=1 ;;
         k) N7_KEEP_RUN_DIR=1 ;;
         p) declare -r N7_SSH_COUNT=$OPTARG 
-           [ "$N7_SSH_COUNT" -gt 0 ] ||
+           [[ $N7_SSH_COUNT -gt 0 ]] ||
                N7::die "Invalid value($N7_SSH_COUNT) for the -p option!"
             ;;
         h) N7::usage; exit ;;

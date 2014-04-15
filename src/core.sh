@@ -6,7 +6,7 @@ N7::close_ssh_pipes() {
     done
 
     # kill ssh processes
-    [ -r "$N7_SSH_PIDs" ] && {
+    [[ -r $N7_SSH_PIDs ]] && {
         kill $(<"$N7_SSH_PIDs") >/dev/null 2>&1
         rm "$N7_SSH_PIDs"
     }
@@ -33,10 +33,10 @@ N7::cleanup() {
     
     N7::close_ssh_pipes
     rm -f "$N7_EHOSTS_FILE"
-    if [ ! "$N7_KEEP_RUN_DIR" ]; then
+    if [[ ! $N7_KEEP_RUN_DIR ]]; then
         rm -rf "$N7_RUN_DIR"
     fi
-    if [ "$last_rc" -ne 0 ]; then
+    if [[ $last_rc -ne 0 ]]; then
         set +x; N7::print_stack_trace
     fi
 }
@@ -61,7 +61,7 @@ N7::send_eot_line() {
 }
 
 N7::ssh_ehosts() {
-    if [ -r "$N7_EHOSTS_FILE" ]; then
+    if [[ -r $N7_EHOSTS_FILE ]]; then
         N7_EHOSTS=$(<"$N7_EHOSTS_FILE") 2>/dev/null
         rm -f "$N7_EHOSTS_FILE"
     fi
@@ -103,18 +103,18 @@ N7::load_tasks() {
         for f in $(declare -f | grep '^\.' | cut -d' ' -f1); do
             line=$(declare -F $f)
             p=${line#* }; p=${p#* }
-            if [ "$p" = "$N7_SCRIPT" ]; then printf "%s\n" "$line"; fi
+            if [[ $p = $N7_SCRIPT ]]; then printf "%s\n" "$line"; fi
         done | sort -nk2 | cut -d' ' -f1)
     )
     N7_HANDLERS+=($(
         for f in $(declare -f | grep '^:' | cut -d' ' -f1); do
             line=$(declare -F $f)
             p=${line#* }; p=${p#* }
-            if [ "$p" = "$N7_SCRIPT" ]; then printf "%s\n" "$line"; fi
+            if [[ $p = $N7_SCRIPT ]]; then printf "%s\n" "$line"; fi
         done | sort -nk2 | cut -d' ' -f1)
     )
     shopt -u extdebug
-    if [ ${#N7_TASKS[*]} -le ${#N7_BUILTIN_TASKS[*]} ]; then
+    if [[ ${#N7_TASKS[*]} -le ${#N7_BUILTIN_TASKS[*]} ]]; then
         N7::log "No tasks are defined!" WARNING
     fi
 
@@ -171,7 +171,7 @@ N7::get_task_opt() {
 #
 N7::load_task_opts() {
     local task_idx=-1 task task_opts name val
-    while [[ $# > 0 ]]; do
+    while (( $# > 0 )); do
         name=N7_TASK_OPTS_$((++task_idx))
         task=$1; shift
         task_opts=$(N7::parse_task_opts "$task")
@@ -182,16 +182,16 @@ N7::load_task_opts() {
         # check if each option name is valid
         val=($(eval echo '${!'$name'[*]}'))
         for name in ${N7_TASK_OPT_NAMES[*]}; do val=(${val[*]/#$name}); done
-        if [ "$(echo ${val[*]})" ]; then   #FIXME: option value might conflict with echo's options
+        if [[ $(echo ${val[*]}) ]]; then   #FIXME: option value might conflict with echo's options
             N7::die "Invalid task options(${val[*]}) in task #$task_idx"
         fi
         
         # validate the TIMEOUT value
         val=$(N7::get_task_opt $task_idx TIMEOUT)
-        [ ! "$val" ] || [ "$val" -gt 0 ] || N7::die "Invalid timeout(\`$val') for task #$task_idx!"
+        [[ ! $val || $val -gt 0 ]] || N7::die "Invalid timeout(\`$val') for task #$task_idx!"
 
         # set NAME to function name if it's not specified.
-        if [ ! "$(eval echo \${N7_TASK_OPTS_$task_idx[NAME]})" ]; then
+        if [[ ! $(eval echo \${N7_TASK_OPTS_$task_idx[NAME]}) ]]; then
             eval N7_TASK_OPTS_$task_idx[NAME]=$task
         fi
 
@@ -236,8 +236,8 @@ N7::wait_for_task_on_hosts() {
             diff <(echo "$eot_lines" | grep "^==>" | cut -d' ' -f2 | sort) \
                  <(echo "$out_files" | sort) | grep '^>' | cut -d' ' -f2
         )
-        [ "$eot_lines" ] && grep "^$N7_EOT" <<<"$eot_lines"
-        [ ! "$out_files" ] && return # ie, all out files have the EOT at the end.
+        [[ $eot_lines ]] && grep "^$N7_EOT" <<<"$eot_lines"
+        [[ ! $out_files ]] && return # ie, all out files have the EOT at the end.
 
     done
     local path oIFS=$IFS
@@ -261,14 +261,14 @@ N7::wait_for_task() {
     # wait for the EOT marker at the end in each host's out file
     while read _ host _ rc _; do
 
-        if [ "$rc" != 0 ]; then
+        if [[ $rc != 0 ]]; then
 
             # remove timed out host so that it won't block the next task
-            if [ "$rc" = $N7_ERRNO_TIMEOUT ]; then
+            if [[ $rc = $N7_ERRNO_TIMEOUT ]]; then
                 hosts=$(echo ${hosts/$host})
 
             # remove failed host if the task has no IGNORE_STATUS set
-            elif [ ! "$(N7::get_task_opt $task_idx IGNORE_STATUS)" ]; then
+            elif [[ ! $(N7::get_task_opt $task_idx IGNORE_STATUS) ]]; then
                 hosts=$(echo ${hosts/$host})
             fi
         fi
@@ -291,7 +291,7 @@ N7::ssh_connect() {
     local host port ssh_pipe ssh_out ssh_err fd
     for host in $*; do
         ssh_pipe=$(N7::ssh_read_pipe $host)
-        if [ -e "$ssh_pipe" ]; then
+        if [[ -e $ssh_pipe ]]; then
             continue
         fi
         ssh_out=$(N7::ssh_out_file $host) && touch "$ssh_out" && chmod 0600 "$ssh_out"
@@ -307,7 +307,7 @@ N7::ssh_connect() {
           ssh_pid=$!
           echo $ssh_pid >>"$N7_SSH_PIDs"
           wait $ssh_pid
-          if [ $? -gt 0 -a $? -lt 128 ]; then
+          if [[ $? -gt 0 && $? -lt 128 ]]; then
               N7::log "$(echo "SSH connection to $host disconnected!"; cat "$ssh_err")"
           fi
 
@@ -355,7 +355,7 @@ N7::show_task_outputs() {
     for host in $*; do
         out_file=$(N7::ssh_out_file $host)
 
-        if [ "$show_output" ]; then
+        if [[ $show_output ]]; then
             from_line=$(grep -an "^$N7_EOT $host $last_task_idx " "$out_file" |
                     tail -n1 | cut -d: -f1)
             let ++from_line
@@ -404,7 +404,7 @@ N7::run_tasks() {
 
     local host task rc no_subshell sudo
 
-    while [[ $# > 0 && $N7_EHOSTS ]]; do
+    while [[ $# -gt 0 && $N7_EHOSTS ]]; do
         task=$1; shift
         N7_TASK_IDX=${N7_TASK_NAME_2_INDEX[$task]}
 
@@ -413,13 +413,13 @@ N7::run_tasks() {
         N7::log "Running Task: $(N7::get_task_opt $N7_TASK_IDX NAME) ..."
 
         # handle local task, which has no timeout control.
-        if [ "$(N7::get_task_opt $N7_TASK_IDX LOCAL)" ]; then
+        if [[ $(N7::get_task_opt $N7_TASK_IDX LOCAL) ]]; then
             export N7_HOST=localhost;
 
-            if [ "$no_subshell" ]; then $task; else ($task); fi; rc=$?
+            if [[ $no_subshell ]]; then $task; else ($task); fi; rc=$?
             N7::log "localhost rc=$rc"
 
-            if [ "$rc" != 0 -a ! "$(N7::get_task_opt $N7_TASK_IDX IGNORE_STATUS)" ]; then
+            if [[ $rc != 0 && ! $(N7::get_task_opt $N7_TASK_IDX IGNORE_STATUS) ]]; then
                 N7::die "Error running local task #$N7_TASK_IDX: $(N7::get_task_opt $N7_TASK_IDX NAME)"
             fi
 
@@ -440,9 +440,9 @@ N7::run_tasks() {
                            N7_EHOSTS=\$(echo $N7_EHOSTS) \
                            N7_HOST=$(N7::q "$host") \
                     " $host
-                [ "$no_subshell" ] || N7::send_cmd '('             $host
+                [[ $no_subshell ]] || N7::send_cmd '('             $host
                                       N7::send_cmd $task           $host
-                [ "$no_subshell" ] || N7::send_cmd ') </dev/null'  $host
+                [[ $no_subshell ]] || N7::send_cmd ') </dev/null'  $host
                 N7::send_eot_line $host
             done
             N7_EHOSTS=$(N7::wait_for_task $N7_TASK_IDX $N7_EHOSTS)
@@ -482,16 +482,16 @@ N7::run_pre_task_function() {
 #
 N7::run_tasks_on_hosts() {
     local tasks=$1 hosts=$2
-    if [ "$N7_SSH_COUNT" ]; then
+    if [[ $N7_SSH_COUNT ]]; then
         while read hosts; do
             N7::run_tasks "$tasks" "${hosts}"
-            if [ "$(N7::ssh_ehosts)" != "$hosts" ]; then
+            if [[ $(N7::ssh_ehosts) != $hosts ]]; then
                 return $?
             fi
         done < <(tr ' ' '\n' <<<$hosts | paste -d' ' $(seq -f - ${N7_SSH_COUNT}))
     else
         N7::run_tasks "$tasks" "$hosts"
-        [ "$(N7::ssh_ehosts)" = "$hosts" ]
+        [[ $(N7::ssh_ehosts) = $hosts ]]
     fi
 }
 

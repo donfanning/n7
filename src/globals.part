@@ -24,7 +24,7 @@ for host in $N7_HOSTS; do
         fi
         host=${host%:$port}
     fi
-    if [ "${N7_HOST_PORTS[$host]}" ]; then
+    if [[ ${N7_HOST_PORTS[$host]} ]]; then
         N7::die "Duplicate host entry($host) found in remote host list!"
     fi
     N7_HOST_PORTS[$host]=:$port
@@ -36,20 +36,20 @@ declare -r N7_HOSTS
 # N7_HOSTS now contains only hostnames. Port needs to be looked up in
 # N7_HOST_PORTS.
 
-if [ "$N7_SCRIPT" ]; then
+[[ $N7_HOSTS ]] || { N7::log "Empty host list!" WARNING; exit 0; }
+
+if [[ $N7_SCRIPT ]]; then
     N7_SCRIPT_ARGS=("$@")
 fi
 
 # If command line commands are provided then wrap the commands
 # in N7 tasks.
-if [ ! "$N7_SCRIPT" ]; then
+if [[ ! $N7_SCRIPT ]]; then
     i=0
     for cmd in "$@"; do
         eval ".N7::cli_task::$i() {
             : REMOTE=1
-            if [ ! "$N7_CLI_TASK_NO_REDIRECTION" ]; then
-                exec 2>&1
-            fi
+          " $(if [[ ! $N7_CLI_TASK_NO_REDIRECTION ]]; then echo "exec 2>&1"; fi) "
             $cmd
         }"
         let ++i

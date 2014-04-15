@@ -1,7 +1,7 @@
 N7::q() { printf "%q\n" "$*"; }
 N7::qm() {
     local result=$(printf "%q " "$@")
-    printf "${result% }\n"
+    printf "%s\n" "${result% }"
 }
 N7::get_sudo() {
     local sudo=${1:-$N7_SUDO}

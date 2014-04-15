@@ -49,7 +49,7 @@ trap 'N7::cleanup' ABRT ERR TERM QUIT INT EXIT HUP
 
 
 # Load user's .n7 script
-if [ "$N7_SCRIPT" ]; then
+if [[ $N7_SCRIPT ]]; then
     source "$N7_SCRIPT" "${N7_SCRIPT_ARGS[@]}" || N7::die "Failed loading $N7_SCRIPT!"
 fi
 
