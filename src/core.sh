@@ -5,17 +5,17 @@ N7::close_ssh_pipes() {
         eval "exec $fd>&-"
     done
 
-    # kill ssh processes
-    [[ -r $N7_SSH_PIDs ]] && {
-        kill $(<"$N7_SSH_PIDs") >/dev/null 2>&1
-        rm "$N7_SSH_PIDs"
-    }
-
-    # kill -9 each of the whole process groups that's reading the ssh pipes.
-    for pid_pgid in $(ps x -opid,pgid | awk 'NR==1 {next}; {printf("%d,%d\n", $1, $2)}'); do
-        if [[ " ${N7_SSH_PPIDs[*]} " =~ " ${pid_pgid%,*} " ]]; then
-            kill -9 -- -${pid_pgid#*,} >/dev/null 2>&1
-        fi
+    # Kill each of the whole process groups that's reading the ssh pipes.
+    # Do it first with SIGTERM and then finally with SIGKILL.
+    #
+    local sig pids=$(ps x -opid,pgid | awk 'NR==1 {next}; {printf("%d,%d\n", $1, $2)}')
+#    for sig in TERM KILL; do
+    for sig in TERM; do
+        for pid_pgid in $pids; do
+            if [[ " ${N7_SSH_PPIDs[*]} " =~ " ${pid_pgid%,*} " ]]; then
+                kill -$sig -- -${pid_pgid#*,} >/dev/null 2>&1 || true
+            fi
+        done
     done
 
     for host in $N7_HOSTS; do
@@ -25,20 +25,30 @@ N7::close_ssh_pipes() {
 
 
 N7::cleanup() {
-    local last_rc=$?; set +e +E
+    local last_rc=$?
+
+    # To prevent from being called more than once.(eg, from ERR and EXIT)
+    if ! mv "$N7_INTERNAL_ERR_FILE" \
+          "$N7_INTERNAL_ERR_FILE.done" >/dev/null 2>&1; then
+        return
+    fi
+
+    if [[ $last_rc -ne 0 ]]; then
+        set +x; N7::print_stack_trace
+    fi
+
+    set +e +E
 
     # this is to silence bash from reporting to stderr that a
     # child process was killed with SIGKILL.
-    exec 2>>"$N7_INTERNAL_ERR_FILE"
+    exec 2>>"$N7_INTERNAL_ERR_FILE.done"
     
     N7::close_ssh_pipes
     rm -f "$N7_EHOSTS_FILE"
     if [[ ! $N7_KEEP_RUN_DIR ]]; then
         rm -rf "$N7_RUN_DIR"
     fi
-    if [[ $last_rc -ne 0 ]]; then
-        set +x; N7::print_stack_trace
-    fi
+    exit $last_rc
 }
 
 N7::ssh_read_pipe() { echo "$N7_RUN_DIR/$1.pipe_r"; }
@@ -69,6 +79,17 @@ N7::ssh_ehosts() {
 }
 
 
+# Output a list of function names matching a specific pattern in the order
+# they are defined in $N7_SCRIPT.
+#
+N7::_get_func_names() {
+    local f line p
+    for f in $(declare -f | grep -- "$1" | cut -d' ' -f1); do
+        line=$(declare -F $f)
+        p=${line#* }; p=${p#* }
+        if [[ $p = $N7_SCRIPT ]]; then printf "%s\n" "$line"; fi
+    done | sort -nk2 | cut -d' ' -f1
+}
 
 
 # N7::load_tasks
@@ -99,20 +120,8 @@ N7::load_tasks() {
     #        show_task_outputs().
 
     shopt -s extdebug
-    N7_TASKS+=($(
-        for f in $(declare -f | grep '^\.' | cut -d' ' -f1); do
-            line=$(declare -F $f)
-            p=${line#* }; p=${p#* }
-            if [[ $p = $N7_SCRIPT ]]; then printf "%s\n" "$line"; fi
-        done | sort -nk2 | cut -d' ' -f1)
-    )
-    N7_HANDLERS+=($(
-        for f in $(declare -f | grep '^:' | cut -d' ' -f1); do
-            line=$(declare -F $f)
-            p=${line#* }; p=${p#* }
-            if [[ $p = $N7_SCRIPT ]]; then printf "%s\n" "$line"; fi
-        done | sort -nk2 | cut -d' ' -f1)
-    )
+    N7_TASKS+=($(N7::_get_func_names '^\.'))
+    N7_HANDLERS+=($(N7::_get_func_names '^:'))
     shopt -u extdebug
     if [[ ${#N7_TASKS[*]} -le ${#N7_BUILTIN_TASKS[*]} ]]; then
         N7::log "No tasks are defined!" WARNING
@@ -176,13 +185,17 @@ N7::load_task_opts() {
         task=$1; shift
         task_opts=$(N7::parse_task_opts "$task")
 
-        #HACK: if there's a syntax error with the array assignment then this will exit 1.
-        set -e; source <(echo "declare -gA $name; $name=$task_opts"); set +e
+        declare -gA "$name=$task_opts"
 
-        # check if each option name is valid
+        # check if each option name is valid by removing all known option
+        # names from an array of user specified option names.
         val=($(eval echo '${!'$name'[*]}'))
-        for name in ${N7_TASK_OPT_NAMES[*]}; do val=(${val[*]/#$name}); done
-        if [[ $(echo ${val[*]}) ]]; then   #FIXME: option value might conflict with echo's options
+        for name in ${N7_TASK_OPT_NAMES[*]}; do # 
+            val=(${val[*]/#$name})
+        done
+
+        # if there's still any options left over then it's an unknown option.
+        if [[ $(printf %s "${val[*]}") ]]; then
             N7::die "Invalid task options(${val[*]}) in task #$task_idx"
         fi
         
@@ -192,18 +205,18 @@ N7::load_task_opts() {
 
         # set NAME to function name if it's not specified.
         if [[ ! $(eval echo \${N7_TASK_OPTS_$task_idx[NAME]}) ]]; then
-            eval N7_TASK_OPTS_$task_idx[NAME]=$task
+            declare -g "N7_TASK_OPTS_$task_idx[NAME]=$task"
         fi
 
         # deal with LOCAL and REMOTE
         local localremote=$(echo "$task_opts" | grep -P '^\[LOCAL|REMOTE\]=' | tail -n1)
         val=N7_TASK_OPTS_$task_idx
         if [[ ! $localremote ]]; then
-            eval $val[$N7_DEFAULT_TASK_TYPE]=1
+            declare -g "$val[$N7_DEFAULT_TASK_TYPE]=1"
         elif [[ $localremote  == \[LOCAL\]=* ]]; then
-            eval unset $val[REMOTE]
+            unset $val[REMOTE]
         elif [[ $localremote  == \[REMOTE\]=* ]]; then
-            eval unset $val[LOCAL]
+            unset $val[LOCAL]
         fi
     done
 }
@@ -223,21 +236,27 @@ N7::wait_for_task_on_hosts() {
     local task_idx=$1; shift
     local timeout=$(N7::get_task_opt $task_idx TIMEOUT)
     local out_files=$(for h in $*; do N7::ssh_out_file $h; done)
+    # NOTE: $out_files is a newline separated string of pathes.
+    #       The use of IFS=$'\n' below is to make word-splitting split on
+    #       newlines instead of white spaces, because a path may contain spaces.
+
     local eot_lines
 
     timeout=${timeout:-$N7_TASK_TIMEOUT}
     SECONDS=0
     while (( SECONDS < timeout )); do
         sleep 0.01
-        eot_lines=$(IFS=$'\n'; tail -v -n1 $out_files | grep -aPB1 "^$N7_EOT [^ ]+ \b$task_idx\b \d+")
-        # Note: with tail's '==> path <==' headers.
+        eot_lines=$(IFS=$'\n' 
+            tail -v -n1 $out_files |  # with tail's '==> path <==' headers
+            grep -aPB1 "^$N7_EOT [^ ]+ \b$task_idx\b \d+" || true
+        )
 
+        if [[ $eot_lines ]]; then grep "^$N7_EOT" <<<"$eot_lines"; fi
         out_files=$(
             diff <(echo "$eot_lines" | grep "^==>" | cut -d' ' -f2 | sort) \
                  <(echo "$out_files" | sort) | grep '^>' | cut -d' ' -f2
         )
-        [[ $eot_lines ]] && grep "^$N7_EOT" <<<"$eot_lines"
-        [[ ! $out_files ]] && return # ie, all out files have the EOT at the end.
+        if [[ ! $out_files ]]; then return; fi  # ie, all out files have the EOT at the end.
 
     done
     local path oIFS=$IFS
@@ -255,11 +274,12 @@ N7::wait_for_task_on_hosts() {
 #
 N7::wait_for_task() {
     local task_idx=$1; shift
+    local ignore_status=$(N7::get_task_opt $task_idx IGNORE_STATUS)
     local hosts=$*
     local host rc
 
     # wait for the EOT marker at the end in each host's out file
-    while read _ host _ rc _; do
+    while read -r _ host _ rc _; do
 
         if [[ $rc != 0 ]]; then
 
@@ -268,7 +288,7 @@ N7::wait_for_task() {
                 hosts=$(echo ${hosts/$host})
 
             # remove failed host if the task has no IGNORE_STATUS set
-            elif [[ ! $(N7::get_task_opt $task_idx IGNORE_STATUS) ]]; then
+            elif [[ ! $ignore_status ]]; then
                 hosts=$(echo ${hosts/$host})
             fi
         fi
@@ -294,6 +314,7 @@ N7::ssh_connect() {
         if [[ -e $ssh_pipe ]]; then
             continue
         fi
+        N7::debug "Creating pipes for $host..."
         ssh_out=$(N7::ssh_out_file $host) && touch "$ssh_out" && chmod 0600 "$ssh_out"
         ssh_err=$(N7::ssh_err_file $host) && touch "$ssh_err" && chmod 0600 "$ssh_err"
 
@@ -301,26 +322,27 @@ N7::ssh_connect() {
 
         port=${N7_HOST_PORTS[$host]#:}
 
+        N7::debug "Connecting to $host..."
+        N7::debug "$N7_SSH_CMD ${port:+-p$port} $host"
+
         set -m  # temporarily enable job control to create the following
         (       # subshell in its own process group.
-          $N7_SSH_CMD ${port:+-p$port} $host 'exec -l /bin/bash' <"$ssh_pipe" >"$ssh_out" 2>"$ssh_err" &
-          ssh_pid=$!
-          echo $ssh_pid >>"$N7_SSH_PIDs"
-          wait $ssh_pid
+          $N7_SSH_CMD ${port:+-p$port} $host "exec -l $N7_REMOTE_SHELL" <"$ssh_pipe" >"$ssh_out" 2>"$ssh_err"
           if [[ $? -gt 0 && $? -lt 128 ]]; then
               N7::log "$(echo "SSH connection to $host disconnected!"; cat "$ssh_err")"
           fi
-
-          # remove the ssh pid from the ssh pid file
-          sed -i '' -e "/^$ssh_pid\$/d" "$N7_SSH_PIDs" >/dev/null 2>&1
 
           # make any further writes to the pipe fail without blocking,
           # then read from the pipe to unblock the process that had written
           # to it before the chmod.
           chmod a-w "$ssh_pipe" &&
-          while true; do cat "$ssh_pipe" >/dev/null; done #FIXME: don't discard the data read?
-        ) 2>>"$N7_INTERNAL_ERR_FILE" & set +m
+          while true; do cat "$ssh_pipe" >/dev/null; done || true #FIXME: don't discard the data read?
+
+        ) 2>>"$N7_INTERNAL_ERR_FILE" &
+        set +m
         N7_SSH_PPIDs+=($!)
+
+        N7::debug "SSH ppid=${N7_SSH_PPIDs[-1]} for $host"
 
         # this is just to keep the pipe from being closed when its
         # write end closes.

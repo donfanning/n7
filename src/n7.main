@@ -3,7 +3,6 @@
 # N7 - Ad Hoc Task Automation and Orchestration in Bash.
 #
 # TODO:
-#   - Warn about no hosts specified
 #   - 
 
 set -eE
@@ -20,6 +19,7 @@ trap "set +x; N7::print_stack_trace" ERR
 #< globals.part
 #
 mkdir -p "$N7_DIR" "$N7_DIR/tmp" "$N7_RUNS_DIR" "$N7_RUN_DIR"
+touch $N7_INTERNAL_ERR_FILE
 #---------------------------------------------------------------
 
 
@@ -28,6 +28,7 @@ mkdir -p "$N7_DIR" "$N7_DIR/tmp" "$N7_RUNS_DIR" "$N7_RUN_DIR"
 #< core.sh
 #
 trap 'N7::cleanup' ABRT ERR TERM QUIT INT EXIT HUP
+# NOTE: N7::cleanup also calls N7::print_stack_trace on ERR.
 #---------------------------------------------------------------
 
 
@@ -47,6 +48,11 @@ trap 'N7::cleanup' ABRT ERR TERM QUIT INT EXIT HUP
 #
 #----------------------------------------------------------------
 
+#--- Load shorthands for builtin functions ----------------------
+#
+#< shorthands.sh
+#
+#----------------------------------------------------------------
 
 # Load user's .n7 script
 if [[ $N7_SCRIPT ]]; then
