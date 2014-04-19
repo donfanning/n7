@@ -47,11 +47,12 @@ fi
 if [[ ! $N7_SCRIPT ]]; then
     i=0
     for cmd in "$@"; do
-        eval ".N7::cli_task::$i() {
+        eval "
+        .N7::cli_task::$i() {
             : REMOTE=1
-          " $(if [[ ! $N7_CLI_TASK_NO_REDIRECTION ]]; then echo "exec 2>&1"; fi) "
             $cmd
-        }"
+        } $(if [[ ! $N7_CLI_TASK_NO_REDIRECTION ]]; then echo "2>&1"; fi)
+        "
         let ++i
     done
     unset cmd i
@@ -93,7 +94,10 @@ N7_DEFAULT_TASK_TYPE=${N7_DEFAULT_TASK_TYPE:-LOCAL}
 N7_TASK_OPT_NAMES=(
   DESCRIPTION     # describe what the task does.
   TIMEOUT         # timeout in seconds for the remote task.
+
   NO_SUBSHELL     # set it to run the task directly in the N7 login shell.
+                  # Note: this option should be avoided, since if not careful,
+                  #       the task could interfere with N7 and cause a timeout.
 
   LOCAL           # set it to run the task locally.
   REMOTE          # set it to run the task remotely.

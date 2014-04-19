@@ -16,6 +16,7 @@ N7::close_ssh_pipes() {
                 kill -$sig -- -${pid_pgid#*,} >/dev/null 2>&1 || true
             fi
         done
+#        sleep 0.5
     done
 
     for host in $N7_HOSTS; do
@@ -35,6 +36,7 @@ N7::cleanup() {
 
     if [[ $last_rc -ne 0 ]]; then
         set +x; N7::print_stack_trace
+        cat "$N7_INTERNAL_ERR_FILE.done" >&2
     fi
 
     set +e +E
@@ -63,6 +65,7 @@ N7::send_eot_line() {
     # the line is: <eot_hash> <hostname> <task_index|-1> <exit_status|$?> <changed|->
     local line="$N7_EOT $1 ${N7_TASK_IDX:-$last_builtin_task_idx} ${2:-\$N7_RC} \
                \$([ -e \"\$(N7::remote::tasks::change_file)\" ] && echo changed || echo -)"
+               #FIXME: during initiliazation, N7::remote::tasks::change_file may not yet be available!
 
     N7::send_cmd "N7_RC=\$?; (echo; echo $line) | tee /dev/stderr" ${1:?'Empty host!'}
     #
@@ -83,12 +86,14 @@ N7::ssh_ehosts() {
 # they are defined in $N7_SCRIPT.
 #
 N7::_get_func_names() {
+    shopt -s extdebug
     local f line p
     for f in $(declare -f | grep -- "$1" | cut -d' ' -f1); do
         line=$(declare -F $f)
         p=${line#* }; p=${p#* }
         if [[ $p = $N7_SCRIPT ]]; then printf "%s\n" "$line"; fi
     done | sort -nk2 | cut -d' ' -f1
+    shopt -u extdebug
 }
 
 
@@ -119,10 +124,8 @@ N7::load_tasks() {
     #FIXME: .N7::cli_task:: is a hard coded prefix that's also used in globals.part and
     #        show_task_outputs().
 
-    shopt -s extdebug
     N7_TASKS+=($(N7::_get_func_names '^\.'))
     N7_HANDLERS+=($(N7::_get_func_names '^:'))
-    shopt -u extdebug
     if [[ ${#N7_TASKS[*]} -le ${#N7_BUILTIN_TASKS[*]} ]]; then
         N7::log "No tasks are defined!" WARNING
     fi
@@ -270,7 +273,9 @@ N7::wait_for_task_on_hosts() {
 # N7::wait_for_task <task_idx> [host1 host2 ...]
 #
 # Wait for task to finish running until a timeout on each host.
-# Outputs a string of hosts that N7 will be using for running the next task.
+#
+# Updates N7_EHOSTS and N7_EHOSTS_FILE with the list of hosts that N7
+# will be using for running the next task.
 #
 N7::wait_for_task() {
     local task_idx=$1; shift
@@ -297,7 +302,9 @@ N7::wait_for_task() {
         #  it(because all tasks for a host share one ssh pipe), thus
         #  its following tasks are likely also going to be timed out.
     done < <(N7::wait_for_task_on_hosts $task_idx $hosts)
-    echo $hosts
+
+    N7_EHOSTS=$hosts
+    echo $hosts >$N7_EHOSTS_FILE
 }
 
 
@@ -424,7 +431,7 @@ N7::run_tasks() {
 
     N7::ssh_connect $N7_EHOSTS
 
-    local host task rc no_subshell sudo
+    local host task rc no_subshell sudo hosts
 
     while [[ $# -gt 0 && $N7_EHOSTS ]]; do
         task=$1; shift
@@ -438,28 +445,31 @@ N7::run_tasks() {
         if [[ $(N7::get_task_opt $N7_TASK_IDX LOCAL) ]]; then
             export N7_HOST=localhost;
 
+            local unset_e='' unset_E=''
+            if [[ $- =~ e ]]; then set +e; unset_e=1; fi
+            if [[ $- =~ E ]]; then set +E; unset_E=1; fi
             if [[ $no_subshell ]]; then $task; else ($task); fi; rc=$?
+            if [[ $unset_e ]]; then set -e; fi
+            if [[ $unset_E ]]; then set -E; fi
             N7::log "localhost rc=$rc"
 
             if [[ $rc != 0 && ! $(N7::get_task_opt $N7_TASK_IDX IGNORE_STATUS) ]]; then
                 N7::die "Error running local task #$N7_TASK_IDX: $(N7::get_task_opt $N7_TASK_IDX NAME)"
             fi
 
-            # the local task might invoke a function that changes N7_EHOSTS in a subshell
-            # this updates the global N7_EHOSTS var from N7_EHOSTS_FILE.
-            N7::ssh_ehosts >/dev/null
-
             # We also send an EOT line to each remote host at the end of a local task.
             # This is to make extracting stdout or stderr of a remote task easier.
             for host in $N7_EHOSTS; do N7::send_eot_line $host $rc; done
+            #FIXME: there should be a way to set the eot line's host to localhost 
 
         else
-            # send the remote task to each host
-            for host in $N7_EHOSTS; do
+            # run the remote task on each host
+            hosts=$(echo $N7_EHOSTS)
+            for host in $hosts; do
                 N7::run_pre_task_function $task $host
                 N7::send_cmd " \
                     export N7_TASK_IDX=$N7_TASK_IDX \
-                           N7_EHOSTS=\$(echo $N7_EHOSTS) \
+                           N7_EHOSTS=$(N7::q "$hosts") \
                            N7_HOST=$(N7::q "$host") \
                     " $host
                 [[ $no_subshell ]] || N7::send_cmd '('             $host
@@ -467,12 +477,10 @@ N7::run_tasks() {
                 [[ $no_subshell ]] || N7::send_cmd ') </dev/null'  $host
                 N7::send_eot_line $host
             done
-            N7_EHOSTS=$(N7::wait_for_task $N7_TASK_IDX $N7_EHOSTS)
+            N7::wait_for_task $N7_TASK_IDX $hosts
+            N7::show_task_outputs $N7_TASK_IDX $hosts
         fi
 
-        #FIXME: this doesn't show failed task output because failed
-        #       hosts will have been removed from N7_EHOSTS
-        N7::show_task_outputs $N7_TASK_IDX $N7_EHOSTS
     done
 }
 
@@ -513,7 +521,7 @@ N7::run_tasks_on_hosts() {
         done < <(tr ' ' '\n' <<<$hosts | paste -d' ' $(seq -f - ${N7_SSH_COUNT}))
     else
         N7::run_tasks "$tasks" "$hosts"
-        [[ $(N7::ssh_ehosts) = $hosts ]]
+        if [[ $(N7::ssh_ehosts) != $hosts ]]; then return $?; fi
     fi
 }
 

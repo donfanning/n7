@@ -1,7 +1,4 @@
 #!/bin/bash
-#@+leo-ver=5-thin
-#@+node:jkuan.20140106102002.1899: * @file basic.n7
-#@@first
 # set -e
 
 # Some basic tests
@@ -97,21 +94,21 @@ CAPTURED=
     : REMOTE=1
     [ -e $TEST_CP_FNAME ]; assert "Failed copying a local file to remote hosts!"
     if [ -e $TEST_CP_FNAME ]; then
-        sudo=1 N7::remote::files::file $TEST_CP_FNAME owner=root group=admin mode=600
-        ls -l $TEST_CP_FNAME | grep -- "^-rw-------" | awk '{print $3, $4}' | grep 'root admin'
+        sudo=1 N7::remote::files::file $TEST_CP_FNAME owner=root group=adm mode=600
+        ls -l $TEST_CP_FNAME | grep -- "^-rw-------" | awk '{print $3, $4}' | grep 'root adm'
         assert "Failed setting file attributes"
     fi
 }
-    
+
 .test_cp_with_mode() {
     : LOCAL=1
-    sudo=1 N7::local::files::cp "$0" /tmp/cp_file_$PID owner=vagrant group=vagrant mode=644
+    sudo=1 N7::local::files::cp "$0" /tmp/cp_file_$PID owner=ubuntu group=ubuntu mode=644
     N7::local::commands::send_env TEST_CP_FNAME=/tmp/cp_file_$PID
 }
-.check_cp_and_file() {
+.check_cp_and_file_mode() {
     : REMOTE=1
     [ -e $TEST_CP_FNAME ]; assert "Failed copying a local file to remote hosts!"
-    ls -l $TEST_CP_FNAME | grep -- "^-rw-r--r--" | awk '{print $3, $4}' | grep 'vagrant vagrant'
+    ls -l $TEST_CP_FNAME | grep -- "^-rw-r--r--" | awk '{print $3, $4}' | grep 'ubuntu ubuntu'
     assert "Failed setting file attributes"
 }
 
@@ -142,5 +139,3 @@ CAPTURED=
     N7::local::commands::n7 'touch /tmp/nnnn'
 }
 
-
-#@-leo

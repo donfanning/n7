@@ -177,11 +177,12 @@ fi
 if [[ ! $N7_SCRIPT ]]; then
     i=0
     for cmd in "$@"; do
-        eval ".N7::cli_task::$i() {
+        eval "
+        .N7::cli_task::$i() {
             : REMOTE=1
-          " $(if [[ ! $N7_CLI_TASK_NO_REDIRECTION ]]; then echo "exec 2>&1"; fi) "
             $cmd
-        }"
+        } $(if [[ ! $N7_CLI_TASK_NO_REDIRECTION ]]; then echo "2>&1"; fi)
+        "
         let ++i
     done
     unset cmd i
@@ -223,7 +224,10 @@ N7_DEFAULT_TASK_TYPE=${N7_DEFAULT_TASK_TYPE:-LOCAL}
 N7_TASK_OPT_NAMES=(
   DESCRIPTION     # describe what the task does.
   TIMEOUT         # timeout in seconds for the remote task.
+
   NO_SUBSHELL     # set it to run the task directly in the N7 login shell.
+                  # Note: this option should be avoided, since if not careful,
+                  #       the task could interfere with N7 and cause a timeout.
 
   LOCAL           # set it to run the task locally.
   REMOTE          # set it to run the task remotely.
@@ -334,6 +338,7 @@ N7::close_ssh_pipes() {
                 kill -$sig -- -${pid_pgid#*,} >/dev/null 2>&1 || true
             fi
         done
+#        sleep 0.5
     done
 
     for host in $N7_HOSTS; do
@@ -353,6 +358,7 @@ N7::cleanup() {
 
     if [[ $last_rc -ne 0 ]]; then
         set +x; N7::print_stack_trace
+        cat "$N7_INTERNAL_ERR_FILE.done" >&2
     fi
 
     set +e +E
@@ -381,6 +387,7 @@ N7::send_eot_line() {
     # the line is: <eot_hash> <hostname> <task_index|-1> <exit_status|$?> <changed|->
     local line="$N7_EOT $1 ${N7_TASK_IDX:-$last_builtin_task_idx} ${2:-\$N7_RC} \
                \$([ -e \"\$(N7::remote::tasks::change_file)\" ] && echo changed || echo -)"
+               #FIXME: during initiliazation, N7::remote::tasks::change_file may not yet be available!
 
     N7::send_cmd "N7_RC=\$?; (echo; echo $line) | tee /dev/stderr" ${1:?'Empty host!'}
     #
@@ -401,12 +408,14 @@ N7::ssh_ehosts() {
 # they are defined in $N7_SCRIPT.
 #
 N7::_get_func_names() {
+    shopt -s extdebug
     local f line p
     for f in $(declare -f | grep -- "$1" | cut -d' ' -f1); do
         line=$(declare -F $f)
         p=${line#* }; p=${p#* }
         if [[ $p = $N7_SCRIPT ]]; then printf "%s\n" "$line"; fi
     done | sort -nk2 | cut -d' ' -f1
+    shopt -u extdebug
 }
 
 
@@ -437,10 +446,8 @@ N7::load_tasks() {
     #FIXME: .N7::cli_task:: is a hard coded prefix that's also used in globals.part and
     #        show_task_outputs().
 
-    shopt -s extdebug
     N7_TASKS+=($(N7::_get_func_names '^\.'))
     N7_HANDLERS+=($(N7::_get_func_names '^:'))
-    shopt -u extdebug
     if [[ ${#N7_TASKS[*]} -le ${#N7_BUILTIN_TASKS[*]} ]]; then
         N7::log "No tasks are defined!" WARNING
     fi
@@ -588,7 +595,9 @@ N7::wait_for_task_on_hosts() {
 # N7::wait_for_task <task_idx> [host1 host2 ...]
 #
 # Wait for task to finish running until a timeout on each host.
-# Outputs a string of hosts that N7 will be using for running the next task.
+#
+# Updates N7_EHOSTS and N7_EHOSTS_FILE with the list of hosts that N7
+# will be using for running the next task.
 #
 N7::wait_for_task() {
     local task_idx=$1; shift
@@ -615,7 +624,9 @@ N7::wait_for_task() {
         #  it(because all tasks for a host share one ssh pipe), thus
         #  its following tasks are likely also going to be timed out.
     done < <(N7::wait_for_task_on_hosts $task_idx $hosts)
-    echo $hosts
+
+    N7_EHOSTS=$hosts
+    echo $hosts >$N7_EHOSTS_FILE
 }
 
 
@@ -742,7 +753,7 @@ N7::run_tasks() {
 
     N7::ssh_connect $N7_EHOSTS
 
-    local host task rc no_subshell sudo
+    local host task rc no_subshell sudo hosts
 
     while [[ $# -gt 0 && $N7_EHOSTS ]]; do
         task=$1; shift
@@ -756,28 +767,31 @@ N7::run_tasks() {
         if [[ $(N7::get_task_opt $N7_TASK_IDX LOCAL) ]]; then
             export N7_HOST=localhost;
 
+            local unset_e='' unset_E=''
+            if [[ $- =~ e ]]; then set +e; unset_e=1; fi
+            if [[ $- =~ E ]]; then set +E; unset_E=1; fi
             if [[ $no_subshell ]]; then $task; else ($task); fi; rc=$?
+            if [[ $unset_e ]]; then set -e; fi
+            if [[ $unset_E ]]; then set -E; fi
             N7::log "localhost rc=$rc"
 
             if [[ $rc != 0 && ! $(N7::get_task_opt $N7_TASK_IDX IGNORE_STATUS) ]]; then
                 N7::die "Error running local task #$N7_TASK_IDX: $(N7::get_task_opt $N7_TASK_IDX NAME)"
             fi
 
-            # the local task might invoke a function that changes N7_EHOSTS in a subshell
-            # this updates the global N7_EHOSTS var from N7_EHOSTS_FILE.
-            N7::ssh_ehosts >/dev/null
-
             # We also send an EOT line to each remote host at the end of a local task.
             # This is to make extracting stdout or stderr of a remote task easier.
             for host in $N7_EHOSTS; do N7::send_eot_line $host $rc; done
+            #FIXME: there should be a way to set the eot line's host to localhost 
 
         else
-            # send the remote task to each host
-            for host in $N7_EHOSTS; do
+            # run the remote task on each host
+            hosts=$(echo $N7_EHOSTS)
+            for host in $hosts; do
                 N7::run_pre_task_function $task $host
                 N7::send_cmd " \
                     export N7_TASK_IDX=$N7_TASK_IDX \
-                           N7_EHOSTS=\$(echo $N7_EHOSTS) \
+                           N7_EHOSTS=$(N7::q "$hosts") \
                            N7_HOST=$(N7::q "$host") \
                     " $host
                 [[ $no_subshell ]] || N7::send_cmd '('             $host
@@ -785,12 +799,10 @@ N7::run_tasks() {
                 [[ $no_subshell ]] || N7::send_cmd ') </dev/null'  $host
                 N7::send_eot_line $host
             done
-            N7_EHOSTS=$(N7::wait_for_task $N7_TASK_IDX $N7_EHOSTS)
+            N7::wait_for_task $N7_TASK_IDX $hosts
+            N7::show_task_outputs $N7_TASK_IDX $hosts
         fi
 
-        #FIXME: this doesn't show failed task output because failed
-        #       hosts will have been removed from N7_EHOSTS
-        N7::show_task_outputs $N7_TASK_IDX $N7_EHOSTS
     done
 }
 
@@ -831,7 +843,7 @@ N7::run_tasks_on_hosts() {
         done < <(tr ' ' '\n' <<<$hosts | paste -d' ' $(seq -f - ${N7_SSH_COUNT}))
     else
         N7::run_tasks "$tasks" "$hosts"
-        [[ $(N7::ssh_ehosts) = $hosts ]]
+        if [[ $(N7::ssh_ehosts) != $hosts ]]; then return $?; fi
     fi
 }
 
@@ -845,33 +857,36 @@ trap 'N7::cleanup' ABRT ERR TERM QUIT INT EXIT HUP
 #--- Define built-in tasks to initialize environments and define
 #    built-in functions on remote hosts.
 #
-# This is the very first local task that gets run by N7 to bootstrap remote
+# These built-in tasks bootstrap the environment on each remote host by
+# defining functions and environment variables.
+#
+
+# This is the very first task that gets run by N7 to bootstrap remote
 # tasks, and environment variables.
 #
-.N7::init_local() { : LOCAL=1
+.N7::init_local() { : LOCAL=1; set -e
+
     # define remote tasks on remote hosts
     local task i=0
 
     for task in ${N7_TASKS[*]} ${N7_HANDLERS[*]}; do
-        if [ "$(N7::get_task_opt $i REMOTE)" ]; then
+        if [[ $(N7::get_task_opt $i REMOTE) ]]; then
             N7::local::commands::send_funcs $task
         fi
         i=$((++i))
     done
     # NOTE: implementation-wise, handlers are treated just like a task.
+
     N7::local::commands::send_env  \
-        N7_SUDO=$(N7::q "$N7_SUDO") \
-        N7_REMOTE_RUN_DIR=$(N7::q "$N7_REMOTE_RUN_DIR") \
-        N7_REMOTE_TMP_DIR=$(N7::q "$N7_REMOTE_TMP_DIR") \
-        N7_ANSIBLE_OUT=$(N7::q "$N7_ANSIBLE_OUT")
+        "N7_SUDO=$N7_SUDO" \
+        "N7_REMOTE_RUN_DIR=$N7_REMOTE_RUN_DIR" \
+        "N7_REMOTE_TMP_DIR=$N7_REMOTE_TMP_DIR" \
+        "N7_ANSIBLE_OUT=$N7_ANSIBLE_OUT"
 }
 
 # This is the first remote task run by N7 to setup remote N7 built-ins
 #
-.N7::init_remote() {
-    : REMOTE=1
-    : NO_SUBSHELL=1
-
+.N7::init_remote() { : REMOTE=1; set -e
     # create N7 runtime directories
     mkdir -p "$N7_REMOTE_RUN_DIR" "$N7_REMOTE_TMP_DIR"
 }
@@ -880,6 +895,11 @@ trap 'N7::cleanup' ABRT ERR TERM QUIT INT EXIT HUP
     : REMOTE=1
     : NO_SUBSHELL=1
 
+# Here we include the remote built-in definitions.
+#
+# Executing this task will have the effect of defining these
+# functions globally on the remote host.
+#
 N7::q() { printf "%q\n" "$*"; }
 N7::qm() {
     local result=$(printf "%q " "$@")
@@ -987,6 +1007,321 @@ if "failed" in data:
 #
 # Functions under the N7::local "namespace" can only be used locally.
 
+#
+# Wrapper around Bash's built-in trap command.
+# It takes care not to overwrite existing commands already assigned to a signal.
+#
+# Use it instead if you would like to use trap in your N7 script.
+#
+N7::local::utils::trap() {
+    local cmd=$1; shift
+    local signal cur_cmd;
+    for signal in $*; do
+        cur_cmd=$(trap -p $signal)
+        cur_cmd=${cur_cmd#*\'}
+        cur_cmd=${cur_cmd%\'*}
+        trap "${cur_cmd:+"$cur_cmd;"} $cmd" $signal
+    done
+}
+
+
+# N7::local::commands::remote <cmd>
+#
+# Run cmd on ALL effective remote hosts.
+# The command will be run in a subshell unless the env var no_subshell is
+# set for the command. Eg, no_subshell=1 N7::local::commands::remote "echo hello"
+#
+# Return 0 if the command was run successfully on all remote hosts;
+# return 1 otherwise.
+#
+# This function can only be used from a local task.
+#
+N7::local::commands::remote() {
+    local host hosts=$(N7::ssh_ehosts)
+    for host in $hosts; do
+        [[ $no_subshell ]] || N7::send_cmd '(' $host
+        N7::send_cmd "$1"                      $host
+        [[ $no_subshell ]] || N7::send_cmd ')' $host
+        N7::send_eot_line $host
+    done
+    N7::wait_for_task $N7_TASK_IDX $hosts
+    if [[ $N7_EHOSTS != $hosts ]]; then return $?; fi
+}
+
+
+# N7::local::commands::send_funcs [func_name1 func_name2 ...]
+#
+# Define the list of functions specified on the remote end.
+# Abort n7 with an error if it can't locate all functions specified.
+#
+# Return 0 if all functions are defined successfully on the remote hosts;
+# return 1 otherwise.
+#
+# Alternatively, you can define your remote helper functions within
+# a remote task function that declares ': NO_SUBSHELL=1' so that when
+# the task is run remotely, all the functions within it will be defined
+# globally for later tasks.
+#
+# This function can only be used from a local task.
+#
+N7::local::commands::send_funcs() {
+    local name funcs=() failed=()
+    for name in $*; do
+        funcs+=("$(declare -f "$name")") || failed+=("$name")
+    done
+    [[ $failed ]] && N7::die "Failed locating functions: ${failed[*]}"
+
+    local f hosts=$(N7::ssh_ehosts)
+    for f in "${funcs[@]}"; do
+        no_subshell=1 N7::local::commands::remote "$f"
+    done
+    if [[ $N7_EHOSTS != $hosts ]]; then return $?; fi
+}
+
+
+# N7::local::commands::send_env [name1=value1 name2=value2 ...]
+#
+# Define environment variables on all remote hosts.
+#
+# Each name=value pair must be passed to this function as a single argument.
+# (i.e., space and special shell characters will need to be quoted)
+#
+# Return 0 if all functions are defined successfully on the remote hosts;
+# return 1 otherwise.
+#
+# This function can only be used from a local task.
+#
+N7::local::commands::send_env() {
+    local host name_value hosts=$(N7::ssh_ehosts)
+    for host in $hosts; do
+        for name_value in "$@"; do
+            N7::send_cmd "export -- $(N7::q "$name_value") && " $host
+        done
+        N7::send_cmd "true" $host
+        N7::send_eot_line $host
+    done
+    N7::wait_for_task $N7_TASK_IDX $hosts
+    if [[ $N7_EHOSTS != $hosts ]]; then return $?; fi
+}
+
+
+# N7::local::commands::n7 -s <n7script_path> [options] [args]
+#
+# Run n7 in a subshell with the current effective hosts.
+#
+# The current effective hosts will be passed to the n7 subprocess, therefore
+# you should not specify the -m option.
+#
+N7::local::commands::n7() {
+    echo $N7_EHOSTS | N7_EHOSTS_FILE=$N7_EHOSTS_FILE "$0" -m - "$@"
+}
+
+
+# N7::local::files::cp <local_path> <remote_path> [options]
+#
+# Copy a file from localhost to the remote hosts.
+# Any host it fails to copy the file to will be removed from $N7_EHOSTS.
+# Return 0 if the file is copied to all hosts successfully; return 1 otherwise.
+#
+# Options are name=value pairs. Quotes are needed to escape space and other
+# special characters.
+#
+# Options:
+#
+#   tplcmd - template command to run to process <local_path> before sending it
+#            to a remote host.
+#
+#            Environment variables available to the invoking local task will
+#            still be availalbe, plus a N7_HOST env var will be set to the
+#            remote host that the file will be copied to.
+#
+#            N7 includes a built-in N7::local::files::bash_tpl function, which 
+#            will process the file as a here-doc.
+#
+# All options allowed by the N7::remote::files::file task are also allowed here.
+# 
+# Environment vars that affect the command:
+#
+#   sudo   - sudo before the operation. 1 to use $N7_SUDO, any other
+#            value to use as the command to sudo.
+#
+# This function can only be used from a local task one at a time. 
+#
+N7::local::files::cp() {
+    local src=$1 dest=$(N7::q "$2"); shift; shift
+    local -A params=()
+    local nv; for nv in "$@"; do
+        [[ $nv =~ .+= ]] && params[${nv%%=*}]=${nv#*=}
+    done
+    local tplcmd=${params[tplcmd]}
+    local _sudo=${sudo:+$(N7::get_sudo "$sudo")}
+
+    local token=$(openssl rand -hex 8)
+    N7::local::commands::remote "echo $token \$($_sudo openssl md5 -r $(N7::q "$dest") 2>/dev/null | cut -d' ' -f1)"
+
+    local host hosts=$(N7::ssh_ehosts)
+    local lmd5 rmd5 encoded content
+
+    if [[ $tplcmd ]]; then
+        for host in $hosts; do
+            content=$(N7_HOST=$host $tplcmd "$src") || return $?
+            lmd5=$(openssl md5 -r <<<"$content" | cut -d' ' -f1)
+            rmd5=$(N7::local::tasks::get_stdout $host $N7_TASK_IDX $token); rmd5=${rmd5#* }
+
+            # only copy the file if their md5 sums differ
+            if [[ $rmd5 != $lmd5 ]]; then
+                encoded=$(base64 <<<"$content") || return $?
+                N7::send_cmd "unset N7_RC; echo \"$encoded\" | base64 --decode |
+                    $_sudo tee $dest >/dev/null && N7::remote::tasks::touch_change; N7_RC=\$?" $host
+            fi
+            N7::send_cmd "sudo=$(N7::q "$sudo") N7::remote::files::file $dest $(N7::qm "$@")" $host
+            N7::send_eot_line $host '$(( N7_RC | $? ))'
+        done
+    else
+        content=$(<"$src") || return $?
+        lmd5=$(openssl md5 -r <<<"$content" | cut -d' ' -f1)
+        encoded=$(base64 <<<"$content") || return $?
+
+        for host in $hosts; do
+            rmd5=$(N7::local::tasks::get_stdout $host $N7_TASK_IDX $token); rmd5=${rmd5#* }
+
+            # only copy the file if their md5 sums differ
+            if [[ $rmd5 != $lmd5 ]]; then
+                N7::send_cmd "unset N7_RC; echo \"$encoded\" | base64 --decode |
+                    $_sudo tee $dest >/dev/null && N7::remote::tasks::touch_change; N7_RC=\$?" $host
+            fi
+            N7::send_cmd "sudo=$(N7::q "$sudo") N7::remote::files::file $dest $(N7::qm "$@")" $host
+            N7::send_eot_line $host '$(( N7_RC | $? ))'
+        done
+    fi
+
+    N7::wait_for_task $N7_TASK_IDX $hosts
+    if [[ $N7_EHOSTS != $hosts ]]; then return $?; fi
+}
+
+
+# N7::local::files::bash_tpl <bash_template_file_path>
+#
+# Print the contents of a local file to stdout.
+# The file content is subject to parameter expansions and process substitutions.
+#
+# Output lines(with optional leading space characters) that begin with the
+# character sequence #: will be removed from the output. 
+#
+# In cases where variable assignment is needed, parameter expansion
+# can be used to achieve the desired side effect.
+#
+# Example template file:
+#
+#    #: ${time_start:=$(date +%s)}
+#    Sleeping...
+#    #: $(sleep 2)
+#    Slept for $(($(date +%s) - time_start)) seconds.
+#
+# Note that time_start must not have been set in order for it to be
+# set, and once it's set, it cannot be unset or re-assigned. So, rather
+# this trick is more like "binding" a var name to a value than setting
+# a variable to a value.
+#
+N7::local::files::bash_tpl() {
+    (
+        source <(echo "cat <<EOF
+$(<"$1")
+EOF
+"       )
+    ) | sed '/^[[:space:]]*#:.*$/d'
+}
+
+
+#
+# This is an alternative implementation of N7::local::files::cp() that uses scp
+# instead. It first scp the source file to a temporary file and then move it over
+# to the destination if the scp was successful. It might be faster and safer for
+# large files.
+#
+N7::local::files::scp() {
+    local src=$1 dest=$(N7::q "$2"); shift; shift
+    local -A params=()
+    local nv; for nv in "$@"; do
+        [[ $nv =~ .+= ]] && params[${nv%%=*}]=${nv#*=}
+    done
+
+    local tmpdir=$(N7::q "$N7_REMOTE_TMP_DIR")
+    local host hosts=$(N7::ssh_ehosts)
+    for host in $hosts; do
+        N7::send_cmd "tmpdir=$tmpdir mktemp -t .tmp.XXXXXXXXXXX" $host
+        #FIXME: tmp file name shows up in stdout...
+        N7::send_eot_line $host \$?
+    done
+    hosts=$(N7::wait_for_task $N7_TASK_IDX $hosts)
+
+    local tmpf pids=()
+    local -A tmpfiles=()
+    for host in $hosts; do
+        tmpf=$(N7::local::tasks::get_stdout $host $N7_TASK_IDX | tail -2 | head -1)
+        tmpfiles[$host]="$tmpf"
+        scp $N7_SSH_OPTS "$src" "$host:$tmpf" &
+        pids+=($host,$!)
+    done
+
+    local _sudo=${sudo:+$(N7::get_sudo "$sudo")}
+
+    local host_pid 
+    for host_pid in ${pids[*]}; do
+        host=${host_pid%,*}
+        src=$(N7::q "${tmpfiles[$host]}")
+        N7::send_cmd ": N7::local::files::scp $src $dest" $host
+        if wait ${host_pid#*,}; then
+            N7::send_cmd "
+                $_sudo mv $src $dest &&
+                sudo="$sudo" N7::remote::files::file $dest $(N7::qm "$@")
+            " $host
+            N7::send_eot_line $host \$?
+        else
+            N7::send_eot_line $host 1
+        fi
+    done
+
+    N7::wait_for_task $N7_TASK_IDX $hosts
+    if [[ $N7_EHOSTS != $hosts ]]; then return $?; fi
+}
+
+
+# N7::local::tasks::get_stdout <hostname> <task_index|task_name> [pattern]
+#
+# Output the stdout of the task with <task_idx> from <hostname> that
+# matches the optional regex pattern.
+#
+N7::local::tasks::get_stdout() {
+    local task_idx
+    if ! N7::is_num "$2"; then
+        task_idx=${N7_TASK_NAME_2_INDEX[$2]}
+    else
+        task_idx=$2
+    fi
+    [[ $task_idx -ge 0 ]] &&
+    awk 'BEGIN { i = 0 }
+    { if ($0 !~ "^'$N7_EOT'") {
+        if ($0 ~ /'${3:-.}'/)
+          lines[i++] = $0
+      } else {
+        if ($3 == "'$task_idx'")
+          for (e=0; e < i; e++)
+            print lines[e];
+        i=0;
+      } 
+    }' "$(N7::ssh_out_file $1)"
+}
+
+#
+# Output the stderr of the task with <task_idx> from <hostname>
+#
+eval "$(declare -f N7::local::tasks::get_stdout \
+         | sed -e 's/stdout/stderr/
+                   s/_out_/_err_/'
+       )"
+
+
 N7::local::ansible::replace_mod() {
     python - <<<"$(cat <<'EOF'
 #
@@ -1090,332 +1425,9 @@ N7::local::ansible::run_mod() {
 }
 
 
-#
-# Wrapper around Bash's built-in trap command.
-# It takes care not to overwrite existing commands already assigned to a signal.
-#
-# Use it instead if you would like to use trap in your N7 script.
-#
-N7::local::utils::trap() {
-    local cmd=$1; shift
-    local signal cur_cmd;
-    for signal in $*; do
-        cur_cmd=$(trap -p $signal)
-        cur_cmd=${cur_cmd#*\'}
-        cur_cmd=${cur_cmd%\'*}
-        trap "${cur_cmd:+"$cur_cmd;"} $cmd" $signal
-    done
-}
 
 
-# N7::local::commands::remote <cmd>
-#
-# Run cmd on ALL effective remote hosts.
-# The command will be run in a subshell unless the env var no_subshell is
-# set for the command. Eg, no_subshell=1 N7::local::commands::remote "echo hello"
-#
-# Return 0 if the command was run successfully on all remote hosts;
-# return 1 otherwise.
-#
-# This function can only be used from a local task.
-#
-N7::local::commands::remote() {
-    local host hosts=$(N7::ssh_ehosts)
-    for host in $hosts; do
-        [ "$no_subshell" ] || N7::send_cmd '(' $host
-        N7::send_cmd "$1"                      $host
-        [ "$no_subshell" ] || N7::send_cmd ')' $host
-        N7::send_eot_line $host
-    done
-    hosts=$(N7::wait_for_task $N7_TASK_IDX $hosts)
-    echo $hosts >"$N7_EHOSTS_FILE"
 
-    [ "$N7_EHOSTS" = "$hosts" ]
-    return $?
-}
-
-
-# N7::local::commands::send_funcs [func_name1 func_name2 ...]
-#
-# Define the list of functions specified on the remote end.
-# Abort n7 with an error if it can't locate all functions specified.
-#
-# Return 0 if all functions are defined successfully on the remote hosts;
-# return 1 otherwise.
-#
-# Alternatively, you can define your remote helper functions within
-# a remote task function that declares ': NO_SUBSHELL=1' so that when
-# the task is run remotely, all the functions within it will be defined
-# globally for later tasks.
-#
-# This function can only be used from a local task.
-#
-N7::local::commands::send_funcs() {
-    local name funcs=() failed=()
-    for name in $*; do
-        funcs+=("$(declare -f "$name")") || failed+=("$name")
-    done
-    [ "$failed" ] && N7::die "Failed locating functions: ${failed[*]}"
-
-    local f hosts=$(N7::ssh_ehosts)
-    for f in "${funcs[@]}"; do
-        no_subshell=1 N7::local::commands::remote "$f"
-    done
-    [ "$N7_EHOSTS" = "$hosts" ]
-    return $?
-}
-
-
-# N7::local::commands::send_env [name1=value1 name2=value2 ...]
-#
-# Define environment variables on all remote hosts.
-#
-# Each name=value pair must be passed to this function as a single argument.
-# (i.e., space and special shell characters will need to be quoted)
-#
-# Return 0 if all functions are defined successfully on the remote hosts;
-# return 1 otherwise.
-#
-# This function can only be used from a local task.
-#
-N7::local::commands::send_env() {
-    local host name_value hosts=$(N7::ssh_ehosts)
-    for host in $hosts; do
-        for name_value in "$@"; do
-            N7::send_cmd "export $(N7::q "$name_value") &&" $host
-        done
-        N7::send_cmd "true" $host
-        N7::send_eot_line $host
-    done
-    hosts=$(N7::wait_for_task $N7_TASK_IDX $hosts)
-    echo $hosts >"$N7_EHOSTS_FILE"
-
-    [ "$N7_EHOSTS" = "$hosts" ]
-    return $?
-}
-
-
-# N7::local::commands::n7 -s <n7script_path> [options] [args]
-#
-# Run n7 in a subshell with the current effective hosts.
-#
-# The current effective hosts will be passed to the n7 subprocess, therefore
-# you should not specify the -m option.
-#
-N7::local::commands::n7() {
-    echo $N7_EHOSTS | N7_EHOSTS_FILE=$N7_EHOSTS_FILE "$0" -m - "$@"
-}
-
-
-# N7::local::files::cp <local_path> <remote_path> [options]
-#
-# Copy a file from localhost to the remote hosts.
-# Any host it fails to copy the file to will be removed from $N7_EHOSTS.
-# Return 0 if the file is copied to all hosts successfully; return 1 otherwise.
-#
-# Options are name=value pairs. Quotes are needed to escape space and other
-# special characters.
-#
-# Options:
-#
-#   tplcmd - template command to run to process <local_path> before sending it
-#            to a remote host.
-#
-#            Environment variables available to the invoking local task will
-#            still be availalbe, plus a N7_HOST env var will be set to the
-#            remote host that the file will be copied to.
-#
-#            N7 includes a built-in N7::local::files::bash_tpl function, which 
-#            will process the file as a here-doc.
-#
-# All options allowed by the N7::remote::files::file task are also allowed here.
-# 
-# Environment vars that affect the command:
-#
-#   sudo   - sudo before the operation. 1 to use $N7_SUDO, any other
-#            value to use as the command to sudo.
-#
-# This function can only be used from a local task one at a time. 
-#
-N7::local::files::cp() {
-    local src=$1 dest=$(N7::q "$2"); shift; shift
-    local -A params=()
-    local nv; for nv in "$@"; do
-        [[ $nv =~ .+= ]] && params[${nv%%=*}]=${nv#*=}
-    done
-    local tplcmd=${params[tplcmd]}
-    local _sudo=${sudo:+$(N7::get_sudo "$sudo")}
-
-    local token=$(openssl rand -hex 8)
-    N7::local::commands::remote "echo $token \$($_sudo openssl md5 -r $(N7::q "$dest") 2>/dev/null | cut -d' ' -f1)"
-
-    local host hosts=$(N7::ssh_ehosts)
-    local lmd5 rmd5 encoded content
-
-    if [ "$tplcmd" ]; then
-        for host in $hosts; do
-            content=$(N7_HOST=$host $tplcmd "$src") || return $?
-            lmd5=$(openssl md5 -r <<<"$content" | cut -d' ' -f1)
-            rmd5=$(N7::local::tasks::get_stdout $host $N7_TASK_IDX $token); rmd5=${rmd5#* }
-
-            # only copy the file if their md5 sums differ
-            if [ "$rmd5" != "$lmd5" ]; then
-                encoded=$(base64 <<<"$content") || return $?
-                N7::send_cmd "unset N7_RC; echo \"$encoded\" | base64 --decode |
-                    $_sudo tee $dest >/dev/null && N7::remote::tasks::touch_change; N7_RC=\$?" $host
-            fi
-            N7::send_cmd "sudo=$(N7::q "$sudo") N7::remote::files::file $dest $(N7::qm "$@")" $host
-            N7::send_eot_line $host '$(( N7_RC | $? ))'
-        done
-    else
-        content=$(<"$src") || return $?
-        lmd5=$(openssl md5 -r <<<"$content" | cut -d' ' -f1)
-        encoded=$(base64 <<<"$content") || return $?
-
-        for host in $hosts; do
-            rmd5=$(N7::local::tasks::get_stdout $host $N7_TASK_IDX $token); rmd5=${rmd5#* }
-
-            # only copy the file if their md5 sums differ
-            if [ "$rmd5" != "$lmd5" ]; then
-                N7::send_cmd "unset N7_RC; echo \"$encoded\" | base64 --decode |
-                    $_sudo tee $dest >/dev/null && N7::remote::tasks::touch_change; N7_RC=\$?" $host
-            fi
-            N7::send_cmd "sudo=$(N7::q "$sudo") N7::remote::files::file $dest $(N7::qm "$@")" $host
-            N7::send_eot_line $host '$(( N7_RC | $? ))'
-        done
-    fi
-
-    hosts=$(N7::wait_for_task $N7_TASK_IDX $hosts)
-    echo $hosts >"$N7_EHOSTS_FILE"
-
-    [ "$N7_EHOSTS" = "$hosts" ]
-    return $?
-}
-
-
-# N7::local::files::bash_tpl <bash_template_file_path>
-#
-# Print the contents of a local file to stdout.
-# The file content is subject to parameter expansions and process substitutions.
-#
-# Output lines(with optional leading space characters) that begin with the
-# character sequence #: will be removed from the output. 
-#
-# In cases where variable assignment is needed, parameter expansion
-# can be used to achieve the desired side effect.
-#
-# Example template file:
-#
-#    #: ${time_start:=$(date +%s)}
-#    Sleeping...
-#    #: $(sleep 2)
-#    Slept for $(($(date +%s) - time_start)) seconds.
-#
-# Note that time_start must not have been set in order for it to be
-# set, and once it's set, it cannot be unset or re-assigned. So, rather
-# this trick is more like "binding" a var name to a value than setting
-# a variable to a value.
-#
-N7::local::files::bash_tpl() {
-    (
-        source <(echo "cat <<EOF
-$(<"$1")
-EOF
-"       )
-    ) | sed '/^[[:space:]]*#:.*$/d'
-}
-
-
-#
-# This is an alternative implementation of N7::local::files::cp() that uses scp
-# instead. It first scp the source file to a temporary file and then move it over
-# to the destination if the scp was successful. It might be faster and safer for
-# large files.
-#
-N7::local::files::scp() {
-    local src=$1 dest=$(N7::q "$2"); shift; shift
-    local -A params=()
-    local nv; for nv in "$@"; do
-        [[ $nv =~ .+= ]] && params[${nv%%=*}]=${nv#*=}
-    done
-
-    local tmpdir=$(N7::q "$N7_REMOTE_TMP_DIR")
-    local host hosts=$(N7::ssh_ehosts)
-    for host in $hosts; do
-        N7::send_cmd "tmpdir=$tmpdir mktemp -t .tmp.XXXXXXXXXXX" $host
-        #FIXME: tmp file name shows up in stdout...
-        N7::send_eot_line $host \$?
-    done
-    hosts=$(N7::wait_for_task $N7_TASK_IDX $hosts)
-
-    local tmpf pids=()
-    local -A tmpfiles=()
-    for host in $hosts; do
-        tmpf=$(N7::local::tasks::get_stdout $host $N7_TASK_IDX | tail -2 | head -1)
-        tmpfiles[$host]="$tmpf"
-        scp $N7_SSH_OPTS "$src" "$host:$tmpf" &
-        pids+=($host,$!)
-    done
-
-    local _sudo=${sudo:+$(N7::get_sudo "$sudo")}
-
-    local host_pid 
-    for host_pid in ${pids[*]}; do
-        host=${host_pid%,*}
-        src=$(N7::q "${tmpfiles[$host]}")
-        N7::send_cmd ": N7::local::files::scp $src $dest" $host
-        if wait ${host_pid#*,}; then
-            N7::send_cmd "
-                $_sudo mv $src $dest &&
-                sudo="$sudo" N7::remote::files::file $dest $(N7::qm "$@")
-            " $host
-            N7::send_eot_line $host \$?
-        else
-            N7::send_eot_line $host 1
-        fi
-    done
-
-    hosts=$(N7::wait_for_task $N7_TASK_IDX $hosts)
-    echo $hosts >"$N7_EHOSTS_FILE"
-
-    [ "$N7_EHOSTS" = "$hosts" ]
-    return $?
-}
-
-
-# N7::local::tasks::get_stdout <hostname> <task_index|task_name> [pattern]
-#
-# Output the stdout of the task with <task_idx> from <hostname> that
-# matches the optional regex pattern.
-#
-N7::local::tasks::get_stdout() {
-    local task_idx
-    if ! N7::is_num "$2"; then
-        task_idx=${N7_TASK_NAME_2_INDEX[$2]}
-    else
-        task_idx=$2
-    fi
-    [ "$task_idx" -ge 0 ] &&
-    awk 'BEGIN { i = 0 }
-    { if ($0 !~ "^'$N7_EOT'") {
-        if ($0 ~ /'${3:-.}'/)
-          lines[i++] = $0
-      } else {
-        if ($3 == "'$task_idx'")
-          for (e=0; e < i; e++)
-            print lines[e];
-        i=0;
-      } 
-    }' "$(N7::ssh_out_file $1)"
-}
-
-#
-# Output the stderr of the task with <task_idx> from <hostname>
-#
-eval "$(declare -f N7::local::tasks::get_stdout \
-         | sed -e 's/stdout/stderr/
-                   s/_out_/_err_/'
-       )"
 
 #
 # This remote task defines N7's remote built-in functions.
@@ -1469,16 +1481,6 @@ N7::scope_do() {
         #Note: However, the above won't affect the indexes of user-defined tasks.
     done
     unset -f ${N7_BUILTIN_TASKS[*]}
-    for host in ${N7_HOSTS[*]}; do
-        : > "$(N7::ssh_out_file $host)"
-        : > "$(N7::ssh_err_file $host)"
-        # ssh doesn't know that we just truncated the files. This results in
-        # null bytes at the beginning of the files. So, we write an EOT line,
-        # with task index == the index of the last built-in task run, to make
-        # the output of task 0 starts on a newline, and to avoid the null bytes
-        # from appearing as the first user task's output.
-	N7::send_eot_line $host 0
-    done
 }; N7::scope_do; unset -f N7::scope_do
 declare -r N7_TASKS
 

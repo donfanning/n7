@@ -1,8 +1,4 @@
 #!/bin/bash
-#@+leo-ver=5-thin
-#@+node:jkuan.20140107111208.1904: * @file test-n7-cmdline
-#@@first
-#
 
 
 HOSTS=${*:?"Please provide hosts as cmdline args!"}
@@ -13,7 +9,7 @@ OUTPUT_PREFIX=$(openssl rand -hex 8)
 
 # Test host deduplication
 nlines=$(n7 -m $(tr ' ' , <<<"$HOSTS $HOSTS") -v QUIET "echo $OUTPUT_PREFIX testing" | grep ^$OUTPUT_PREFIX | wc -l)
-[ "$nlines" = $# ] && echo "Failed: $LINENO"
+[ "$nlines" = $# ] && echo "Failed: $LINENO"  #FIXME: test fails when only 1 host is provided...
 
 
 # Test task timeout
@@ -52,4 +48,3 @@ EOF
 
 
 exit 0
-#@-leo
