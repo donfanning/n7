@@ -374,7 +374,7 @@ N7::show_task_outputs() {
     local task_name=${N7_TASKS[$task_idx]}
     local last_task_idx=$((task_idx - 1))
 
-    local show_output
+    local show_output  # if -o is specified or if it's a cmdline task
     if [[ $N7_TASK_SHOW_STDOUT ||
           ${task_name/#.N7::cli_task::} != $task_name ]]; then
         show_output=1

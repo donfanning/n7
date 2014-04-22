@@ -3,7 +3,9 @@
 # N7 - Ad Hoc Task Automation and Orchestration in Bash.
 #
 # TODO:
-#   - 
+#   - for a remote task, we should show stderr when the task fails!
+#   - add an option to redirect stderr for all remote tasks to stdout.
+#
 
 set -eE
 
@@ -84,6 +86,10 @@ N7::usage() {
                   Local and command-line task outputs are always shown unless you
                   redirect them in the task.
 
+      -e          Redirect stderr of remote tasks to their stdout.
+                  When combined with -o, this effectively show all remote task
+                  outputs.
+
       -D          Do not redirect stderr to stdout for command line tasks.
                   The default is to do an 'exec 2>&1' at the beginning of each
                   command line task.
@@ -97,12 +103,13 @@ N7::usage() {
 " | sed -e 's/    //')"
 }
 
-while getopts ':hs:m:v:oDkp:-' option; do
+while getopts ':hs:m:v:oeDkp:-' option; do
     case $option in
         s) N7_SCRIPT=$OPTARG; declare -r N7_SCRIPT ;;
         m) N7_HOSTS=$(tr , ' ' <<<"$OPTARG") ;;
         v) N7_VERBOSE=${N7_LOG_LEVELS[$OPTARG]?:"Invalid log level: $OPTARG"} ;;
         o) N7_TASK_SHOW_STDOUT=1 ;;
+        e) N7_REMOTE_STDERR_TO_STDOUT=1 ;;
         D) N7_CLI_TASK_NO_REDIRECTION=1 ;;
         k) N7_KEEP_RUN_DIR=1 ;;
         p) declare -r N7_SSH_COUNT=$OPTARG 
@@ -895,6 +902,9 @@ trap 'N7::cleanup' ABRT ERR TERM QUIT INT EXIT HUP
     : REMOTE=1
     : NO_SUBSHELL=1
 
+# NOTE: Due to NO_SUBSHELL=1, we can't set -e here because then any error
+#       would exit the shell and terminates the ssh session!
+
 # Here we include the remote built-in definitions.
 #
 # Executing this task will have the effect of defining these
@@ -1073,6 +1083,9 @@ N7::local::commands::send_funcs() {
 
     local f hosts=$(N7::ssh_ehosts)
     for f in "${funcs[@]}"; do
+        if [[ $N7_REMOTE_STDERR_TO_STDOUT ]]; then
+            f=$(printf %s "$f" | sed '$s/}/} 2>\&1/')
+        fi
         no_subshell=1 N7::local::commands::remote "$f"
     done
     if [[ $N7_EHOSTS != $hosts ]]; then return $?; fi

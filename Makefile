@@ -1,9 +1,9 @@
 
 
 n7 = bin/n7
-src_files = $(addprefix src/,build n7.main *.sh)
+src_files = $(addprefix src/,build n7.main *.sh *.part)
 
-$(n7): $(src_files)
+$(n7): Makefile $(src_files)
 	$(addprefix src/,build n7.main) > $@; chmod +x $@
 
 

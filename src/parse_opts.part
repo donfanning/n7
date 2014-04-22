@@ -32,6 +32,10 @@ N7::usage() {
                   Local and command-line task outputs are always shown unless you
                   redirect them in the task.
 
+      -e          Redirect stderr of remote tasks to their stdout.
+                  When combined with -o, this effectively show all remote task
+                  outputs.
+
       -D          Do not redirect stderr to stdout for command line tasks.
                   The default is to do an 'exec 2>&1' at the beginning of each
                   command line task.
@@ -45,12 +49,13 @@ N7::usage() {
 " | sed -e 's/    //')"
 }
 
-while getopts ':hs:m:v:oDkp:-' option; do
+while getopts ':hs:m:v:oeDkp:-' option; do
     case $option in
         s) N7_SCRIPT=$OPTARG; declare -r N7_SCRIPT ;;
         m) N7_HOSTS=$(tr , ' ' <<<"$OPTARG") ;;
         v) N7_VERBOSE=${N7_LOG_LEVELS[$OPTARG]?:"Invalid log level: $OPTARG"} ;;
         o) N7_TASK_SHOW_STDOUT=1 ;;
+        e) N7_REMOTE_STDERR_TO_STDOUT=1 ;;
         D) N7_CLI_TASK_NO_REDIRECTION=1 ;;
         k) N7_KEEP_RUN_DIR=1 ;;
         p) declare -r N7_SSH_COUNT=$OPTARG 

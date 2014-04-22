@@ -66,6 +66,9 @@ N7::local::commands::send_funcs() {
 
     local f hosts=$(N7::ssh_ehosts)
     for f in "${funcs[@]}"; do
+        if [[ $N7_REMOTE_STDERR_TO_STDOUT ]]; then
+            f=$(printf %s "$f" | sed '$s/}/} 2>\&1/')
+        fi
         no_subshell=1 N7::local::commands::remote "$f"
     done
     if [[ $N7_EHOSTS != $hosts ]]; then return $?; fi
