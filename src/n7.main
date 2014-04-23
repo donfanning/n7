@@ -11,11 +11,14 @@ set -eE
 #< utils.sh         # eg, N7::log, N7::die, ..etc
 trap "set +x; N7::print_stack_trace" ERR
 
+
+N7::debug "Parsing and initializing command line options..."
 #--- Process command line arguments or show usage --------------
 #< parse_opts.part
 #---------------------------------------------------------------
 
 
+N7::debug "Initializing globals and directories..."
 #--- Initialize global variables used by many core functions ---
 #< globals.part
 #
@@ -57,6 +60,7 @@ trap 'N7::cleanup' ABRT ERR TERM QUIT INT EXIT HUP
 
 # Load user's .n7 script
 if [[ $N7_SCRIPT ]]; then
+    N7::debug "Sourcing n7 script: $N7_SCRIPT..."
     source "$N7_SCRIPT" "${N7_SCRIPT_ARGS[@]}" || N7::die "Failed loading $N7_SCRIPT!"
 fi
 
@@ -70,7 +74,10 @@ declare -r \
     N7_SSH_OPTS \
     N7_SSH_CMD 
 
+N7::debug "Loading N7 tasks..."
 N7::load_tasks
+
+N7::debug "Executing N7 built-in tasks..."
 
 # Run N7 built-in tasks first
 N7::run_tasks_on_hosts "${N7_BUILTIN_TASKS[*]}" "${N7_HOSTS[*]}" >>"$N7_INTERNAL_ERR_FILE" 2>&1 ||

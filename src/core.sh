@@ -57,7 +57,7 @@ N7::ssh_read_pipe() { echo "$N7_RUN_DIR/$1.pipe_r"; }
 N7::ssh_out_file() { echo "$N7_RUN_DIR/$1.out"; }
 N7::ssh_err_file() { echo "$N7_RUN_DIR/$1.err"; }
 N7::ssh_host_from_out_file() { echo $(basename "${1%.out}"); }
-N7::send_cmd() { printf "%s\n" "$1" >"$(N7::ssh_read_pipe ${2:?'Empty host!'})"; }
+N7::send_cmd() { printf "%s\n" "$1" >"$(N7::ssh_read_pipe ${2:?'Empty host!'})" || true; }
 
 N7::send_eot_line() {
     local last_builtin_task_idx=$((${#N7_BUILTIN_TASKS[*]} - 1))
@@ -251,7 +251,7 @@ N7::wait_for_task_on_hosts() {
         sleep 0.01
         eot_lines=$(IFS=$'\n' 
             tail -v -n1 $out_files |  # with tail's '==> path <==' headers
-            grep -aPB1 "^$N7_EOT [^ ]+ \b$task_idx\b \d+" || true
+            grep -aPB1 "^$N7_EOT [^ ]+ (-1|\b$task_idx\b) \d+" || true
         )
 
         if [[ $eot_lines ]]; then grep "^$N7_EOT" <<<"$eot_lines"; fi
@@ -343,6 +343,10 @@ N7::ssh_connect() {
           # then read from the pipe to unblock the process that had written
           # to it before the chmod.
           chmod a-w "$ssh_pipe" &&
+
+          # Inject a time-out EOT line directly into the host outfile to avoid timeout
+          echo $N7_EOT $host -1 $N7_ERRNO_TIMEOUT - > "$(N7::ssh_out_file $host)" &&
+
           while true; do cat "$ssh_pipe" >/dev/null; done || true #FIXME: don't discard the data read?
 
         ) 2>>"$N7_INTERNAL_ERR_FILE" &
