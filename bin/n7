@@ -51,6 +51,8 @@ ds::pop() {
 
 trap "set +x; N7::print_stack_trace" ERR
 
+
+N7::debug "Parsing and initializing command line options..."
 #--- Process command line arguments or show usage --------------
 #!/bin/bash
 
@@ -134,6 +136,7 @@ fi
 #---------------------------------------------------------------
 
 
+N7::debug "Initializing globals and directories..."
 #--- Initialize global variables used by many core functions ---
 #!/bin/bash
 
@@ -386,7 +389,7 @@ N7::ssh_read_pipe() { echo "$N7_RUN_DIR/$1.pipe_r"; }
 N7::ssh_out_file() { echo "$N7_RUN_DIR/$1.out"; }
 N7::ssh_err_file() { echo "$N7_RUN_DIR/$1.err"; }
 N7::ssh_host_from_out_file() { echo $(basename "${1%.out}"); }
-N7::send_cmd() { printf "%s\n" "$1" >"$(N7::ssh_read_pipe ${2:?'Empty host!'})"; }
+N7::send_cmd() { printf "%s\n" "$1" >"$(N7::ssh_read_pipe ${2:?'Empty host!'})" || true; }
 
 N7::send_eot_line() {
     local last_builtin_task_idx=$((${#N7_BUILTIN_TASKS[*]} - 1))
@@ -580,7 +583,7 @@ N7::wait_for_task_on_hosts() {
         sleep 0.01
         eot_lines=$(IFS=$'\n' 
             tail -v -n1 $out_files |  # with tail's '==> path <==' headers
-            grep -aPB1 "^$N7_EOT [^ ]+ \b$task_idx\b \d+" || true
+            grep -aPB1 "^$N7_EOT [^ ]+ \b(-1|$task_idx)\b \d+" || true
         )
 
         if [[ $eot_lines ]]; then grep "^$N7_EOT" <<<"$eot_lines"; fi
@@ -672,6 +675,7 @@ N7::ssh_connect() {
           # then read from the pipe to unblock the process that had written
           # to it before the chmod.
           chmod a-w "$ssh_pipe" &&
+          echo $N7_EOT $host 3 $N7_ERRNO_TIMEOUT - > "$(N7::ssh_out_file $host)" &&
           while true; do cat "$ssh_pipe" >/dev/null; done || true #FIXME: don't discard the data read?
 
         ) 2>>"$N7_INTERNAL_ERR_FILE" &
@@ -703,7 +707,7 @@ N7::show_task_outputs() {
     local task_name=${N7_TASKS[$task_idx]}
     local last_task_idx=$((task_idx - 1))
 
-    local show_output
+    local show_output  # if -o is specified or if it's a cmdline task
     if [[ $N7_TASK_SHOW_STDOUT ||
           ${task_name/#.N7::cli_task::} != $task_name ]]; then
         show_output=1
@@ -1466,6 +1470,7 @@ n7_file=N7::remote::files::file
 
 # Load user's .n7 script
 if [[ $N7_SCRIPT ]]; then
+    N7::debug "Sourcing n7 script: $N7_SCRIPT..."
     source "$N7_SCRIPT" "${N7_SCRIPT_ARGS[@]}" || N7::die "Failed loading $N7_SCRIPT!"
 fi
 
@@ -1479,7 +1484,10 @@ declare -r \
     N7_SSH_OPTS \
     N7_SSH_CMD 
 
+N7::debug "Loading N7 tasks..."
 N7::load_tasks
+
+N7::debug "Executing N7 built-in tasks..."
 
 # Run N7 built-in tasks first
 N7::run_tasks_on_hosts "${N7_BUILTIN_TASKS[*]}" "${N7_HOSTS[*]}" >>"$N7_INTERNAL_ERR_FILE" 2>&1 ||
