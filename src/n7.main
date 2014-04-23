@@ -4,7 +4,6 @@
 #
 # TODO:
 #   - for a remote task, we should show stderr when the task fails!
-#   - add an option to redirect stderr for all remote tasks to stdout.
 #
 
 set -eE

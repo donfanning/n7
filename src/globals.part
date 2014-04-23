@@ -96,8 +96,9 @@ N7_TASK_OPT_NAMES=(
   TIMEOUT         # timeout in seconds for the remote task.
 
   NO_SUBSHELL     # set it to run the task directly in the N7 login shell.
-                  # Note: this option should be avoided, since if not careful,
-                  #       the task could interfere with N7 and cause a timeout.
+                  # Note: when using this option, care should be taken to
+                  #       prevent exiting from the shell(eg, don't set -e
+                  #       and don't use exit).
 
   LOCAL           # set it to run the task locally.
   REMOTE          # set it to run the task remotely.
