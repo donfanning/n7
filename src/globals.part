@@ -1,5 +1,10 @@
 #!/bin/bash
 
+N7_PROG_NAME=$0
+N7_CLI_ARGS=("$@")
+N7_IS_LOCAL=1
+N7_PROG_LINE_COUNT=$(wc -l <"$0")
+
 # De-duplicate the hostnames
 N7_HOSTS=$(echo $(echo $N7_HOSTS | tr ' ' '\n' | sort -u | grep -v -- ^-\$))
 
@@ -42,22 +47,6 @@ if [[ $N7_SCRIPT ]]; then
     N7_SCRIPT_ARGS=("$@")
 fi
 
-# If command line commands are provided then wrap the commands
-# in N7 tasks.
-if [[ ! $N7_SCRIPT ]]; then
-    i=0
-    for cmd in "$@"; do
-        eval "
-        .N7::cli_task::$i() {
-            : REMOTE=1
-            $cmd
-        } $(if [[ ! $N7_CLI_TASK_NO_REDIRECTION ]]; then echo "2>&1"; fi)
-        "
-        let ++i
-    done
-    unset cmd i
-fi
-
 # The "effective" host list. It gets updated by `run_tasks()' while N7_HOSTS doesn't.
 N7_EHOSTS=
 
@@ -66,14 +55,6 @@ N7_TASKS=()
 # NOTE: Task definitions are just bash functions defined in N7_SCRIPT.
 #       Any function named with a `.` prefix is a task.
 
-
-# These are N7 built-in tasks used to bootstrap N7.
-N7_BUILTIN_TASKS=(
-  .N7::init_local
-  .N7::init_remote
-  .N7::define_remote_builtins
-)
-declare -r N7_BUILTIN_TASKS
 
 # Handlers are remote functions that have a `:` prefix.
 # They are defined automatically by N7 on the remote hosts, but are only
@@ -177,9 +158,6 @@ N7_SSH_PIPE_FDs=()  # file descriptors redirected to write to the SSH read pipes
 # stdout of the last ansible module executed.
 N7_ANSIBLE_OUT=$N7_REMOTE_RUN_DIR/ansible.out
 declare -r N7_ANSIBLE_OUT
-
-# whether N7::cleanup has been called or not.
-N7_CLEANING_UP=
 
 # The shell to switch to once ssh to a remote host. Only Bash is supported.
 N7_REMOTE_SHELL=/bin/bash

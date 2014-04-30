@@ -37,8 +37,6 @@ N7::usage() {
                   outputs.
 
       -D          Do not redirect stderr to stdout for command line tasks.
-                  The default is to do an 'exec 2>&1' at the beginning of each
-                  command line task.
 
       -k          Keep the run directory after execution. The run directory, which
                   is unique to each n7 invocation, stores the runtime files such as

@@ -77,25 +77,9 @@ declare -r \
 N7::debug "Loading N7 tasks..."
 N7::load_tasks
 
-N7::debug "Executing N7 built-in tasks..."
+N7::debug "Executing N7 built-in tasks...: ${N7_TASKS[*]}"
 
-# Run N7 built-in tasks first
-N7::run_tasks_on_hosts "${N7_BUILTIN_TASKS[*]}" "${N7_HOSTS[*]}" >>"$N7_INTERNAL_ERR_FILE" 2>&1 ||
-    N7::die "Failed initializing remote hosts!"
-
-# Unset the built-in tasks and prevent them from showing up in n7 outputs.
-N7::scope_do() {
-    local i host length=${#N7_BUILTIN_TASKS[*]}
-    for ((i=0; i < length; i++)); do
-        unset N7_TASK_OPTS_$i
-        unset N7_TASKS[$i]
-        #Note: However, the above won't affect the indexes of user-defined tasks.
-    done
-    unset -f ${N7_BUILTIN_TASKS[*]}
-}; N7::scope_do; unset -f N7::scope_do
-declare -r N7_TASKS
-
-# Run user's N7 tasks
+# Run N7 tasks
 N7::log "Run id=$N7_RUN_ID -- N7_DIR=$(N7::q "$N7_DIR") N7_EOT=$N7_EOT"
 N7::run_tasks_on_hosts "${N7_TASKS[*]}" "${N7_HOSTS[*]}"
 

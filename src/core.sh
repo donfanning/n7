@@ -60,10 +60,8 @@ N7::ssh_host_from_out_file() { echo $(basename "${1%.out}"); }
 N7::send_cmd() { printf "%s\n" "$1" >"$(N7::ssh_read_pipe ${2:?'Empty host!'})" || true; }
 
 N7::send_eot_line() {
-    local last_builtin_task_idx=$((${#N7_BUILTIN_TASKS[*]} - 1))
-
     # the line is: <eot_hash> <hostname> <task_index|-1> <exit_status|$?> <changed|->
-    local line="$N7_EOT $1 ${N7_TASK_IDX:-$last_builtin_task_idx} ${2:-\$N7_RC} \
+    local line="$N7_EOT $1 ${N7_TASK_IDX:-"-1"} ${2:-\$N7_RC} \
                \$([ -e \"\$(N7::remote::tasks::change_file)\" ] && echo changed || echo -)"
                #FIXME: during initiliazation, N7::remote::tasks::change_file may not yet be available!
 
@@ -87,11 +85,19 @@ N7::ssh_ehosts() {
 #
 N7::_get_func_names() {
     shopt -s extdebug
-    local f line p
     for f in $(declare -f | grep -- "$1" | cut -d' ' -f1); do
         line=$(declare -F $f)
         p=${line#* }; p=${p#* }
-        if [[ $p = $N7_SCRIPT ]]; then printf "%s\n" "$line"; fi
+        if [[ $p = ${2:-"$N7_SCRIPT"} ]]; then
+            if [[ $line =~ ^\.N7::cli_task:: ]]; then
+                # Special handling for cli tasks that were generated at runtime.
+                # This ensures that cli_tasks will be after any built-in tasks.
+                fname=${line%% *}
+                printf "%s %s\n" $fname $(( $N7_PROG_LINE_COUNT + ${fname##*:} ))
+            else
+                printf "%s\n" "$line"
+            fi
+        fi
     done | sort -nk2 | cut -d' ' -f1
     shopt -u extdebug
 }
@@ -108,27 +114,35 @@ N7::_get_func_names() {
 #    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ ^^^^^^^^^^^^^^^^^^
 #                 \________ defined in N7_TASKS                \___ defined in N7_HANDLERS
 #
-#    (<built-in task names...> are also defined in N7_BUILTIN_TASKS)
 #
-# Thus, the first built-in task will have task index 0, and the first
-# user-defined task will have the task index ${#N7_BUILTIN_TASKS[*]}, and
-# the handlers, although not added to N7_TASKS, will have the first task
-# index starting from ${#N7_TASKS[*]}
+# Thus, the first built-in task will have task index 0, and the handlers,
+# which are not part of N7_TASKS, will have the first task index starting
+# from ${#N7_TASKS[*]}
 #
 N7::load_tasks() {
-    # Add built-in tasks
-    N7_TASKS+=(${N7_BUILTIN_TASKS[*]})
-
-    # Add command-line tasks
-    N7_TASKS+=($(declare -f | grep "^\.N7::cli_task::" | cut -d' ' -f1 | sort -t: -nk5))
-    #FIXME: .N7::cli_task:: is a hard coded prefix that's also used in globals.part and
-    #        show_task_outputs().
-
-    N7_TASKS+=($(N7::_get_func_names '^\.'))
-    N7_HANDLERS+=($(N7::_get_func_names '^:'))
-    if [[ ${#N7_TASKS[*]} -le ${#N7_BUILTIN_TASKS[*]} ]]; then
-        N7::log "No tasks are defined!" WARNING
+    # If command line commands are provided then wrap the commands
+    # in N7 tasks.
+    if [[ ! $N7_SCRIPT ]]; then
+        local i=0 cmd
+        for cmd in "${N7_CLI_ARGS[@]}"; do
+            eval "
+            .N7::cli_task::$i() {
+                : REMOTE=1
+                $cmd
+            } $(if [[ ! $N7_CLI_TASK_NO_REDIRECTION ]]; then echo "2>&1"; fi)
+            "
+            let ++i
+        done
     fi
+    # Add built-in tasks and cmdline tasks
+    N7_TASKS+=($(N7::_get_func_names '^\.' "$N7_PROG_NAME"))
+
+    # Add tasks from $N7_SCRIPT
+    N7_TASKS+=($(N7::_get_func_names '^\.'))
+
+    # Handlers are not part of $N7_TASKS, they will only be run
+    # when called or notified.
+    N7_HANDLERS+=($(N7::_get_func_names '^:'))
 
     # Create the reverse, task name -> task index map.
     local task i=0
