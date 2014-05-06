@@ -5,7 +5,8 @@
 # This is the very first task that gets run by N7 to bootstrap remote
 # tasks, and environment variables.
 #
-.N7::init_remote() { : LOCAL=1; set -e
+.N7::init_remote() {
+    : LOCAL=1
     exec >>"$N7_INTERNAL_ERR_FILE" 2>&1
 
     N7::local::commands::send_env  \
@@ -19,27 +20,32 @@
         'mkdir -p "$N7_REMOTE_RUN_DIR" "$N7_REMOTE_TMP_DIR"'
 
     # define remote tasks on remote hosts
-    local task i=0
-
+    local i task tasks=()
     for task in ${N7_TASKS[*]} ${N7_HANDLERS[*]}; do
-        if [[ $(N7::get_task_opt $i REMOTE) ]]; then
-            N7::local::commands::send_funcs $task
+        i=${N7_TASK_NAME_2_INDEX[$task]}
+        if [[ $(N7::get_task_opt "$i" REMOTE) ]]; then
+            tasks+=($task)
         fi
-        i=$((++i))
     done
+    N7::local::commands::send_funcs ${tasks[*]}
     # NOTE: implementation-wise, handlers are treated just like a task.
 }
 
 .N7::define_remote_builtins() {
     : REMOTE=1
     : NO_SUBSHELL=1
-    if [[ ! $N7_IS_LOCAL ]]; then
-        exec 3>&1 4>&2
-        exec >>"$N7_REMOTE_RUN_DIR/$FUNCNAME" 2>&1
-    fi
 
 # NOTE: Due to NO_SUBSHELL=1, we can't set -e here because then any error
 #       would exit the shell and terminates the ssh session!
+
+    local fd1 fd2
+    exec {fd1}>&1 {fd2}>&2
+
+    if [[ ! $N7_IS_LOCAL ]]; then
+        exec >>"$N7_REMOTE_RUN_DIR/$FUNCNAME" 2>&1
+    else
+        exec >> "$N7_INTERNAL_ERR_FILE" 2>&1
+    fi
 
 # Here we include the remote built-in definitions.
 #
@@ -48,10 +54,9 @@
 #
 #< remote_builtins.sh 
 
-    if [[ ! $N7_IS_LOCAL ]]; then
-        exec 1>&3 2>&4
-        exec 3>&- 4>&-
-    fi
-} # >> "$N7_INTERNAL_ERR_FILE" 2>&1
+    eval "exec 1>&$fd1 2>&$fd2"
+    eval "exec $fd1>&- $fd2>&-"
+} 
+
 
 

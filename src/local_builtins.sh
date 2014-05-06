@@ -64,13 +64,23 @@ N7::local::commands::send_funcs() {
     done
     [[ $failed ]] && N7::die "Failed locating functions: ${failed[*]}"
 
-    local f hosts=$(N7::ssh_ehosts)
-    for f in "${funcs[@]}"; do
-        if [[ $N7_REMOTE_STDERR_TO_STDOUT ]]; then
-            f=$(printf %s "$f" | sed '$s/}/} 2>\&1/')
-        fi
-        no_subshell=1 N7::local::commands::remote "$f"
-    done
+    local hosts=$(N7::ssh_ehosts)
+    if [[ $N7_REMOTE_STDERR_TO_STDOUT ]]; then
+        local f i=0 j
+        for f in "${funcs[@]}"; do
+            # skip redirecting command line tasks since they are already, by default, redirected.
+            ((j = i + 1))
+            if [[ ${!j} =~ ^\.N7::cli_task:: ]]; then
+                continue
+            fi
+            funcs[$i]=$(printf %s "$f" | sed '$s/}$/} 2>\&1/')
+            ((++i))
+        done
+    fi
+    local src=$(N7::q "$N7_REMOTE_TASKS_SRC")
+    N7::local::commands::remote "echo '$(printf '%s\n' "${funcs[@]}" | base64)' | base64 --decode >> $src"
+    no_subshell=1 N7::local::commands::remote "source $src"
+
     if [[ $N7_EHOSTS != $hosts ]]; then return $?; fi
 }
 

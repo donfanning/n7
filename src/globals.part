@@ -5,6 +5,10 @@ N7_CLI_ARGS=("$@")
 N7_IS_LOCAL=1
 N7_PROG_LINE_COUNT=$(wc -l <"$0")
 
+exec {N7_STDOUT}>&1; export N7_STDOUT
+exec {N7_STDERR}>&2; export N7_STDERR
+
+
 # De-duplicate the hostnames
 N7_HOSTS=$(echo $(echo $N7_HOSTS | tr ' ' '\n' | sort -u | grep -v -- ^-\$))
 
@@ -142,6 +146,7 @@ N7_SUDO=${N7_SUDO:-sudo}
 # Where N7 store temporary file on a remote host.
 N7_REMOTE_TMP_DIR=/var/tmp/n7
 N7_REMOTE_RUN_DIR=$N7_REMOTE_TMP_DIR/$N7_RUN_ID
+N7_REMOTE_TASKS_SRC=$N7_REMOTE_RUN_DIR/n7_tasks.sh
 
 N7_SSH_OPTS=${N7_SSH_OPTS:-"
   -o BatchMode=yes

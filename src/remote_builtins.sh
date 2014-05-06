@@ -9,6 +9,29 @@ N7::get_sudo() {
 }
 
 
+# Show the line and line number of the task the exited with a non-zero status.
+# Use it in a remote task like this: set -e; trap 'N7::remote::tasks::stack_trace $?' ERR
+#
+N7::remote::tasks::stack_trace() {
+    local traceline=$(i=0; while caller $((i++)); do :; done)
+    local topline=$(head -n1 <<<"$traceline")
+    local lineinfo=( $topline ) # ie, (lineNo. func_name /src/file)
+
+    # Use this instead of ${lineinfo[2]} since path may contain spaces.
+    local srcfile=${topline#* }; srcfile=${srcfile#* }  
+
+    local offset=$(( ${lineinfo[0]} - $(grep -m1 -n ^${lineinfo[1]} "$srcfile" | cut -d: -f1) ))
+
+    echo "Exit $1 from line $offset of task ${lineinfo[1]}:"
+    echo "$(sed -n ${lineinfo[0]}p "$srcfile")"
+    echo 
+    echo "Stack trace -------------:"
+    echo "$traceline"
+
+} >&2
+
+
+
 # Functions under the N7::remote "namespace can be used both remotely and locally.
 
 #

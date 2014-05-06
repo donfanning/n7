@@ -12,6 +12,9 @@ N7::log() {
 N7::die() { N7::log "$1" ${2:-ERROR} >&2; exit 1; }
 N7::debug() { N7::log "$1" DEBUG >&2; }
 
+# NOTE: this can also be used in a (sub-shelled) local task like this:
+#       trap 'N7::print_stack_trace' ERR
+#
 N7::print_stack_trace() {
     echo
     echo "Stack trace: --------"

@@ -3,7 +3,9 @@
 # N7 - Ad Hoc Task Automation and Orchestration in Bash.
 #
 # TODO:
-#   - for a remote task, we should show stderr when the task fails!
+#   - make set -e and error reporting the default for remote tasks
+#   - make dumping stack trace the default for local tasks
+#   - clean up remote n7 tmp dirs
 #
 
 set -eE
@@ -31,8 +33,7 @@ touch $N7_INTERNAL_ERR_FILE
 #--- Define the core functions that make up n7 -----------------
 #< core.sh
 #
-trap 'N7::cleanup' ABRT ERR TERM QUIT INT EXIT HUP
-# NOTE: N7::cleanup also calls N7::print_stack_trace on ERR.
+trap - ERR; trap 'N7::cleanup' EXIT
 #---------------------------------------------------------------
 
 

@@ -1,55 +1,56 @@
 
-N7::close_ssh_pipes() {
-    local fd pid_pgid host
-    for fd in ${N7_SSH_PIPE_FDs[*]}; do
-        eval "exec $fd>&-"
-    done
-
-    # Kill each of the whole process groups that's reading the ssh pipes.
-    # Do it first with SIGTERM and then finally with SIGKILL.
-    #
-    local sig pids=$(ps x -opid,pgid | awk 'NR==1 {next}; {printf("%d,%d\n", $1, $2)}')
-#    for sig in TERM KILL; do
-    for sig in TERM; do
-        for pid_pgid in $pids; do
-            if [[ " ${N7_SSH_PPIDs[*]} " =~ " ${pid_pgid%,*} " ]]; then
-                kill -$sig -- -${pid_pgid#*,} >/dev/null 2>&1 || true
-            fi
-        done
-#        sleep 0.5
-    done
-
-    for host in $N7_HOSTS; do
-        rm -f "$(N7::ssh_read_pipe $host)"
-    done
-}
-
 
 N7::cleanup() {
     local last_rc=$?
 
-    # To prevent from being called more than once.(eg, from ERR and EXIT)
-    if ! mv "$N7_INTERNAL_ERR_FILE" \
-          "$N7_INTERNAL_ERR_FILE.done" >/dev/null 2>&1; then
-        return
-    fi
+    # Restore STDOUT and STDERR
+    exec 1>&$N7_STDOUT 2>&$N7_STDERR
 
+    # Dump stack trace if cleaning up because of an error
     if [[ $last_rc -ne 0 ]]; then
         set +x; N7::print_stack_trace
-        cat "$N7_INTERNAL_ERR_FILE.done" >&2
     fi
 
     set +e +E
 
-    # this is to silence bash from reporting to stderr that a
-    # child process was killed with SIGKILL.
-    exec 2>>"$N7_INTERNAL_ERR_FILE.done"
-    
-    N7::close_ssh_pipes
+    # Close FDs that's keeping the ssh pipes open
+    local fd 
+    for fd in ${N7_SSH_PIPE_FDs[*]}; do
+        eval "exec $fd>&-"
+    done
+
+    # Remove the ssh pipes
+    local host
+    for host in $N7_HOSTS; do
+        rm -f "$(N7::ssh_read_pipe $host)"
+    done
+
     rm -f "$N7_EHOSTS_FILE"
+
+    # Show errors if any
+    if [[ -s $N7_INTERNAL_ERR_FILE ]]; then
+        N7::log "Errors found during initialization or cleanup: --------
+$(<"$N7_INTERNAL_ERR_FILE")" ERROR
+    fi
+
+    # Remove the n7 run dir if not keeping it
     if [[ ! $N7_KEEP_RUN_DIR ]]; then
         rm -rf "$N7_RUN_DIR"
     fi
+
+
+    # This is to keep bash from reporting to stderr that each of the child
+    # process that invokes ssh has been killed.
+    exec 2>/dev/null
+
+    # Kill each of the whole process groups that's reading the ssh pipes.
+    local pid_pgid pids=$(ps x -opid,pgid | awk 'NR==1 {next}; {printf("%d,%d\n", $1, $2)}')
+    for pid_pgid in $pids; do
+        if [[ " ${N7_SSH_PPIDs[*]} " =~ " ${pid_pgid%,*} " ]]; then
+            kill -TERM -- -${pid_pgid#*,}
+        fi
+    done
+
     exit $last_rc
 }
 
@@ -347,21 +348,20 @@ N7::ssh_connect() {
         N7::debug "$N7_SSH_CMD ${port:+-p$port} $host"
 
         set -m  # temporarily enable job control to create the following
-        (       # subshell in its own process group.
-          $N7_SSH_CMD ${port:+-p$port} $host "exec -l $N7_REMOTE_SHELL" <"$ssh_pipe" >"$ssh_out" 2>"$ssh_err"
-          if [[ $? -gt 0 && $? -lt 128 ]]; then
-              N7::log "$(echo "SSH connection to $host disconnected!"; cat "$ssh_err")"
-          fi
+        (       # subshell in its own process group for easy killing during clean up.
+          set +e +E
 
-          # make any further writes to the pipe fail without blocking,
-          # then read from the pipe to unblock the process that had written
-          # to it before the chmod.
-          chmod a-w "$ssh_pipe" &&
+          # Run ssh command and connect its stdin to $ssh_pipe and outputs to files on the file system.
+          $N7_SSH_CMD ${port:+-p$port} $host "exec -l $N7_REMOTE_SHELL" <"$ssh_pipe" >"$ssh_out" 2>"$ssh_err"
+
+          # Make any further writes to the pipe fail without blocking.
+          chmod a-w "$ssh_pipe"
 
           # Inject a time-out EOT line directly into the host outfile to avoid timeout
-          echo $N7_EOT $host -1 $N7_ERRNO_TIMEOUT - > "$(N7::ssh_out_file $host)" &&
+          echo $N7_EOT $host -1 $N7_ERRNO_TIMEOUT - > "$(N7::ssh_out_file $host)"
 
-          while true; do cat "$ssh_pipe" >/dev/null; done || true #FIXME: don't discard the data read?
+          # Read from the pipe to unblock the process that had written to it before the chmod.
+          cat "$ssh_pipe" >/dev/null || true
 
         ) 2>>"$N7_INTERNAL_ERR_FILE" &
         set +m
@@ -447,6 +447,9 @@ N7::run_tasks() {
 
     set -- $1
 
+    local n7_builtin_tasks_count=$(
+        declare -F | cut -d' ' -f3 | grep -P '^\.N7::' | grep -v '::cli_task::' | wc -l)
+
     N7::ssh_connect $N7_EHOSTS
 
     local host task rc no_subshell sudo hosts
@@ -463,13 +466,9 @@ N7::run_tasks() {
         if [[ $(N7::get_task_opt $N7_TASK_IDX LOCAL) ]]; then
             export N7_HOST=localhost;
 
-            local unset_e='' unset_E=''
-            if [[ $- =~ e ]]; then set +e; unset_e=1; fi
-            if [[ $- =~ E ]]; then set +E; unset_E=1; fi
             if [[ $no_subshell ]]; then $task; else ($task); fi; rc=$?
-            if [[ $unset_e ]]; then set -e; fi
-            if [[ $unset_E ]]; then set -E; fi
             N7::log "localhost rc=$rc"
+            #FIXME: this doesn't tell us about the change status of the local task
 
             if [[ $rc != 0 && ! $(N7::get_task_opt $N7_TASK_IDX IGNORE_STATUS) ]]; then
                 N7::die "Error running local task #$N7_TASK_IDX: $(N7::get_task_opt $N7_TASK_IDX NAME)"
@@ -496,7 +495,13 @@ N7::run_tasks() {
                 N7::send_eot_line $host
             done
             N7::wait_for_task $N7_TASK_IDX $hosts
-            N7::show_task_outputs $N7_TASK_IDX $hosts
+
+            # Show output if it's not a built-in tasks, whose outputs are redirected
+            # to $N7_INTERNAL_ERR_FILE
+            #
+            if [[ $N7_TASK_IDX -ge $n7_builtin_tasks_count ]]; then
+                N7::show_task_outputs $N7_TASK_IDX $hosts
+            fi
         fi
 
     done
