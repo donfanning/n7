@@ -1,4 +1,7 @@
-
+# To help debugging, put this line where you want to start stepping through the commands.
+#
+# trap '(read -p "[$BASH_SOURCE:$LINENO] $BASH_COMMAND?")' DEBUG
+#
 
 N7::cleanup() {
     local last_rc=$?
@@ -62,10 +65,14 @@ N7::send_cmd() { printf "%s\n" "$1" >"$(N7::ssh_read_pipe ${2:?'Empty host!'})" 
 
 N7::send_eot_line() {
     # the line is: <eot_hash> <hostname> <task_index|-1> <exit_status|$?> <changed|->
-    local line="$N7_EOT $1 ${N7_TASK_IDX:-"-1"} ${2:-\$N7_RC} \
-               \$([ -e \"\$(N7::remote::tasks::change_file)\" ] && echo changed || echo -)"
-               #FIXME: during initiliazation, N7::remote::tasks::change_file may not yet be available!
-
+    local line="
+        $N7_EOT
+        $1
+        ${N7_TASK_IDX:-"-1"}
+        ${2:-\$N7_RC}
+        \$(N7::remote::tasks::changed 2>/dev/null && echo changed || echo -)
+    "
+    line=$(echo $line)
     N7::send_cmd "N7_RC=\$?; (echo; echo $line) | tee /dev/stderr" ${1:?'Empty host!'}
     #
     # NOTE: we always output a newline before sending the EOT line so
@@ -299,8 +306,10 @@ N7::wait_for_task() {
     local host rc
 
     # wait for the EOT marker at the end in each host's out file
-    while read -r _ host _ rc _; do
+    local results=$(N7::wait_for_task_on_hosts $task_idx $hosts)
 
+    # Update host list base on EOT lines
+    while read -r _ host _ rc _; do
         if [[ $rc != 0 ]]; then
 
             # remove timed out host so that it won't block the next task
@@ -316,7 +325,7 @@ N7::wait_for_task() {
         #  is actually still executing, it will block the tasks after
         #  it(because all tasks for a host share one ssh pipe), thus
         #  its following tasks are likely also going to be timed out.
-    done < <(N7::wait_for_task_on_hosts $task_idx $hosts)
+    done <<<"$results"
 
     N7_EHOSTS=$hosts
     echo $hosts >$N7_EHOSTS_FILE

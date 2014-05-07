@@ -86,13 +86,13 @@ N7::remote::tasks::change_file() {
 }
 N7::remote::tasks::touch_change() {
     local change_file=$(N7::remote::tasks::change_file)
-    [ -e "$change_file" ] || touch "$change_file"
+    [[ -e $change_file ]] || touch "$change_file"
 }
 N7::remote::tasks::reset_change() {
     rm -f "$(N7::remote::tasks::change_file)"
 }
 N7::remote::tasks::changed() {
-    [ -e "$(N7::remote::tasks::change_file $1)" ]
+    [[ -e $(N7::remote::tasks::change_file $1) ]]
 }
 
 
