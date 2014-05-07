@@ -19,25 +19,11 @@ N7::cleanup() {
         eval "exec $fd>&-"
     done
 
-    # Remove the ssh pipes
-    local host
-    for host in $N7_HOSTS; do
-        rm -f "$(N7::ssh_read_pipe $host)"
-    done
-
-    rm -f "$N7_EHOSTS_FILE"
-
     # Show errors if any
     if [[ -s $N7_INTERNAL_ERR_FILE ]]; then
         N7::log "Errors found during initialization or cleanup: --------
 $(<"$N7_INTERNAL_ERR_FILE")" ERROR
     fi
-
-    # Remove the n7 run dir if not keeping it
-    if [[ ! $N7_KEEP_RUN_DIR ]]; then
-        rm -rf "$N7_RUN_DIR"
-    fi
-
 
     # This is to keep bash from reporting to stderr that each of the child
     # process that invokes ssh has been killed.
@@ -50,6 +36,11 @@ $(<"$N7_INTERNAL_ERR_FILE")" ERROR
             kill -TERM -- -${pid_pgid#*,}
         fi
     done
+
+    # Remove the n7 run dir if not keeping it
+    if [[ ! $N7_KEEP_RUN_DIR ]]; then
+        rm -rf "$N7_RUN_DIR"
+    fi
 
     exit $last_rc
 }
@@ -361,7 +352,7 @@ N7::ssh_connect() {
           echo $N7_EOT $host -1 $N7_ERRNO_TIMEOUT - > "$(N7::ssh_out_file $host)"
 
           # Read from the pipe to unblock the process that had written to it before the chmod.
-          cat "$ssh_pipe" >/dev/null || true
+          while true; do cat "$ssh_pipe" >/dev/null; done
 
         ) 2>>"$N7_INTERNAL_ERR_FILE" &
         set +m
